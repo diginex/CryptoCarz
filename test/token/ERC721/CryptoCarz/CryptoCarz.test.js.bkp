@@ -1,0 +1,304 @@
+"use strict";
+
+const BigNumber = require('bignumber.js');
+//const expectThrow = require('../node_modules/zeppelin-solidity/test/helpers/expectThrow');
+const time = require('./helpers/increaseTime');
+const expectThrow = require('./helpers/expectThrow');
+const CryptoCarzToken = artifacts.require("./CryptoCarzToken.sol");
+const CryptoCarzAuction = artifacts.require("./CryptoCarzAuction.sol");
+
+let ETHER = new BigNumber('1e18');
+
+const MINUTE = 60;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+const WEEK = 7 * DAY;
+const MONTH = 30 * DAY;
+const YEAR = 12 * MONTH;
+
+const MAX_ERROR = 10000000;
+
+let GAS_TOLERANCE_PERCENT = 5;
+
+const AUCTION_DURATION = 1 * WEEK;
+const ACTION_BID_AMOUNT = ETHER.times(1);
+const AUCTION_NUM_WINNERS = 3;
+const CARD_IDS = [1, 2, 3, 4, 5];
+
+const ETH_BLOCK_GAS_LIMIT = 7500000;
+
+
+/*
+contract('CryptoCarz', function (accounts) {
+
+    let owner = accounts[9];
+    let manager = accounts[8]
+    let users = accounts.slice(0, 5);
+    let someoneElse = accounts[7];
+
+
+    function assertSimilarBalance(current, expected) {
+        let diff = current.minus(expected);
+        let percentageGas = diff.dividedBy(current).times(100);
+        if (!percentageGas.abs().lt(GAS_TOLERANCE_PERCENT)) {
+            console.log(`current = ${current}`);
+            console.log(`expected = ${expected}`);
+            console.log(`diff = ${diff}`);
+            console.log(`percentageGas = ${percentageGas}`);
+            assert.equal(true, false);
+        }
+        return true;
+    }
+
+    function createContract(name) {
+        let path = `../build/contracts/${name}.json`;
+        let json = require(path);
+        return web3.eth.contract(json['abi']);
+    }
+
+
+    /*
+    describe("CryptoCarzToken tests", async function () {
+
+        let token;
+
+        beforeEach(async function () {
+            token = await CryptoCarzToken.new(manager, { from: owner });
+        });
+
+        it("Instantiation Test", async function () {
+            let totalSupply = await token.totalSupply({ from: someoneElse });
+            assert.equal(totalSupply, 0, 'basic count of tokens');
+
+            await token.mintTokens([1 ,2], { from: manager });
+
+            totalSupply = await token.totalSupply({ from: someoneElse });
+            assert.equal(totalSupply, 2, 'basic count of tokens');
+        });
+
+
+        describe("Gas tests", async function () {
+            it('max block', async function () {
+                let transactionGas = (await web3.eth.getTransaction(token.transactionHash)).gas;
+                console.log(`transactionGas = ${transactionGas}`);
+                assert.isAbove(ETH_BLOCK_GAS_LIMIT, transactionGas, 'Token deployment gas must be lower than block gas limit');
+            });
+    
+        });
+
+    });
+    */
+
+
+
+    describe("CryptoCarzAuction tests", async function () {
+
+        /*
+        describe('auction', function () {
+            it('access control', async function () {
+            let tokenIds = [];
+            await expectThrow(token.createAuction(CARD_IDS, AUCTION_DURATION, AUCTION_NUM_WINNERS, { from: owner }));
+            let _transferTokens = token.createAuction(CARD_IDS, AUCTION_DURATION, AUCTION_NUM_WINNERS, { from: manager });
+            let setManager = await token.setManager(manager, { from: owner });
+            // TODO
+            });
+        }
+        */
+
+        let token;
+        let auction;
+
+        beforeEach(async function () {
+
+            token = await CryptoCarzToken.new(manager, { from: owner });
+            console.log(`token.address = ${token.address}`);
+            auction = await CryptoCarzAuction.new(manager, token.address, CARD_IDS, AUCTION_DURATION, AUCTION_NUM_WINNERS, { from: owner });
+            let getCarIds = await auction.getCarIds();
+            assert.equal(`${getCarIds}`, `${CARD_IDS}`, 'checking car ids')
+            console.log(`auction.address = ${JSON.stringify(auction.address)}`);
+            await token.mintTokens(CARD_IDS, { from: manager });
+            await token.transferTokens(auction.address, CARD_IDS, { from: manager });
+            let tokensOf = await token.tokensOf(auction.address);
+            console.log(`tokensOf = ${tokensOf}`);
+            console.log(`CARD_IDS = ${CARD_IDS}`);
+            assert.equal(`${getCarIds}`, `${CARD_IDS}`, 'checking tokens of auction contract')
+        });
+
+
+        it('place new bid', async function () {
+            let balanceBefore = await web3.eth.getBalance(users[0]);
+            await auction.bid({ from: users[0], value: ACTION_BID_AMOUNT });
+            let bidderAmount = await auction.getBidderAmount(users[0]);
+            console.log(`bidderAmount = ${JSON.stringify(bidderAmount)}`);
+            assert.equal(bidderAmount, ACTION_BID_AMOUNT.toString(), 'should get the same amount that it was bid');
+            let balanceAfter = await web3.eth.getBalance(users[0]);
+            assertSimilarBalance(balanceAfter, balanceBefore.minus(ACTION_BID_AMOUNT));
+        });
+
+        it('upgrade a bid', async function () {
+            await auction.bid({ from: users[0], value: ACTION_BID_AMOUNT });
+            await auction.bid({ from: users[0], value: ACTION_BID_AMOUNT.times(2) });
+            let bidderAmount = await auction.getBidderAmount(users[0]);
+            console.log(`bidderAmount = ${JSON.stringify(bidderAmount)}`);
+            assert.equal(bidderAmount, ACTION_BID_AMOUNT.times(3).toString(), 'should get the sum of all bid amounts');
+        });
+
+        it('full auction', async function () {
+            let balanceBefore = await web3.eth.getBalance(users[3]);
+            await auction.bid({ from: users[0], value: ACTION_BID_AMOUNT * 2 });
+            await auction.bid({ from: users[1], value: ACTION_BID_AMOUNT * 3 });
+            await auction.bid({ from: users[3], value: ACTION_BID_AMOUNT });
+            await auction.bid({ from: users[2], value: ACTION_BID_AMOUNT * 2 });
+            let bidderAmount = await auction.getBidderAmount(users[1]);
+            await time.increaseTime(AUCTION_DURATION + 1);
+            console.log('a');
+            await auction.assignWinners({ from: someoneElse });
+            console.log('b');
+
+            let sortedBids = await auction.getSortedBids({ from: someoneElse });
+            console.log('c');
+            console.log(`sortedBids = ${JSON.stringify(sortedBids)}`);
+
+            let carPrice = await auction.getCarPrice({ from: someoneElse });
+            console.log(`carPrice = ${JSON.stringify(carPrice)}`);
+
+            let isWinner0 = await auction.isWinner(users[0], { from: someoneElse });
+            let isWinner1 = await auction.isWinner(users[1], { from: someoneElse });
+            let isWinner2 = await auction.isWinner(users[2], { from: someoneElse });
+            let isWinner3 = await auction.isWinner(users[3], { from: someoneElse });
+            let isWinnerSomeoneElse = await auction.isWinner(someoneElse, { from: users[0] });
+
+            assert.equal(isWinner0, true, 'Checking if user[0] is winner');
+            assert.equal(isWinner1, true, 'Checking if user[1] is winner');
+            assert.equal(isWinner2, true, 'Checking if user[2] is winner');
+            assert.equal(isWinner3, false, 'Checking if user3[3] is winner');
+            assert.equal(isWinnerSomeoneElse, false, 'Checking if someone else is winner');
+
+            await expectThrow(auction.cancelBid({ from: users[2] }));
+            console.log('c');
+            await auction.cancelBid({ from: users[3] });
+            console.log('d');
+            
+            // TODO: check events
+            
+            let balanceAfter = await web3.eth.getBalance(users[3]);
+            assertSimilarBalance(balanceAfter, balanceBefore.minus(ACTION_BID_AMOUNT));
+
+            console.log('e');
+
+            await auction.claimCar({from: users[0]});
+            console.log('e1');
+            await expectThrow(auction.claimCar({from: users[0]}));
+            console.log('e2');
+            await auction.claimCar({from: users[1]});
+            await auction.claimCar({from: users[2]});
+            console.log('e3');
+            await expectThrow(auction.claimCar({from: users[3]}));
+            console.log('e1');
+            await expectThrow(auction.claimCar({from: someoneElse}));
+            console.log('e5');
+
+            balanceBefore = await web3.eth.getBalance(manager);
+            await auction.withdraw({from: manager});
+            console.log('f');
+            balanceAfter = await web3.eth.getBalance(manager);
+            assertSimilarBalance(balanceAfter, balanceBefore.plus(ACTION_BID_AMOUNT * 7));
+
+        });
+
+    });
+
+});
+
+
+
+            /*
+             it('cash winner bids out', async function () {
+                 await auction.bid({ from: users[0], value: ACTION_BID_AMOUNT });
+                 await auction.bid({ from: users[1], value: ACTION_BID_AMOUNT.times(2) });
+                 await auction.bid({ from: users[2], value: ACTION_BID_AMOUNT.times(3) }); // winner
+                 await auction.bid({ from: users[3], value: ACTION_BID_AMOUNT.times(4) }); // winner
+                 await auction.bid({ from: users[4], value: ACTION_BID_AMOUNT.times(5) }); // winner            
+ 
+                 await time.increaseTime(AUCTION_DURATION + 1);
+ 
+                 let isAuctionEnded = await auction.isAuctionEnded();
+                 assert(isAuctionEnded, true);
+ 
+                 await auction.assignWinners();
+ 
+                 let balanceBefore = await web3.eth.getBalance(owner);
+                 await auction.transferWinnerBidsOut({ from: owner });
+                 let balanceAfter = await web3.eth.getBalance(owner);
+                 assertSimilarBalance(balanceAfter, balanceBefore.plus(ACTION_BID_AMOUNT.times(12)));
+ 
+                 await expectThrow(auction.claimWonToken({ from: users[1] }));
+                 let tokenOwner = await token.ownerOf(CAR_ID);
+ 
+                 //console.log(`tokenOwner = ${tokenOwner}`);
+                 assert(tokenOwner, auction.address);
+                 await auction.claimWonToken({ from: users[2] });
+                 tokenOwner = await token.ownerOf(CAR_ID);
+                 //console.log(`tokenOwner = ${tokenOwner}`);
+                 assert(tokenOwner, users[2]);
+ 
+                 // withdraw bid
+                 balanceBefore = await web3.eth.getBalance(users[0]);
+                 let withdrawBid = await auction.withdrawBid({ from: users[0] });
+                 balanceAfter = await web3.eth.getBalance(users[0]);
+                 assertSimilarBalance(balanceAfter, balanceBefore);
+             });
+ 
+         });
+         /*
+         it('check basic token ownership', async function () {
+             let tokenOwner = await token.ownerOf(CAR_ID);
+             console.log(`tokenOwner = ${tokenOwner}`);
+             assert.equal(tokenOwner, auction.address);
+         });
+     
+         it('cash winner bids out', async function () {
+             await auction.bid({ from: users[0], value: ACTION_BID_AMOUNT });
+             await auction.bid({ from: users[1], value: ACTION_BID_AMOUNT.times(2) });
+             await auction.bid({ from: users[2], value: ACTION_BID_AMOUNT.times(3) }); // winner
+             await auction.bid({ from: users[3], value: ACTION_BID_AMOUNT.times(4) }); // winner
+             await auction.bid({ from: users[4], value: ACTION_BID_AMOUNT.times(5) }); // winner            
+     
+             await time.increaseTime(AUCTION_DURATION + 1);
+     
+             let isAuctionEnded = await auction.isAuctionEnded();
+             assert(isAuctionEnded, true);
+     
+             await auction.assignWinners();
+     
+             let balanceBefore = await web3.eth.getBalance(owner);
+             await auction.transferWinnerBidsOut({from: owner});
+             let balanceAfter = await web3.eth.getBalance(owner);
+             assertSimilarBalance(balanceAfter, balanceBefore.plus(ACTION_BID_AMOUNT.times(12)));
+         
+             await expectThrow(auction.claimWonToken({from: users[1]}));
+             let tokenOwner = await token.ownerOf(CAR_ID);
+             
+             //console.log(`tokenOwner = ${tokenOwner}`);
+             assert(tokenOwner, auction.address);
+             await auction.claimWonToken({from: users[2]});
+             tokenOwner = await token.ownerOf(CAR_ID);
+             //console.log(`tokenOwner = ${tokenOwner}`);
+             assert(tokenOwner, users[2]);
+     
+             // withdraw bid
+             balanceBefore = await web3.eth.getBalance(users[0]);
+             let withdrawBid = await auction.withdrawBid({ from: users[0] });
+             balanceAfter = await web3.eth.getBalance(users[0]);
+             assertSimilarBalance(balanceAfter, balanceBefore);            
+         });                
+         */
+
+
+            /*
+            assert.equal(auction.logs[0].event, 'AssignerTransferred');
+            assert.equal(auction.logs[0].args.previousAssigner.valueOf(), assigner);
+            assert.equal(auction.logs[0].args.newAssigner.valueOf(), newAssigner);
+            const currentAssigner = await token.assigner.call();
+            assert.equal(currentAssigner, newAssigner);
+            */
