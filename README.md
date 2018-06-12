@@ -2,33 +2,43 @@
 
 ## Contracts
 
-Please see the [/contracts/token/ERC721/CryptoCarz/](/contracts/token/ERC721/CryptoCarz/) directory.
+Please see the [contracts/](truffle/contracts) directory.
 
 ## Develop
 
-Contracts are written in [Solidity][solidity] and tested using [Truffle][truffle] and [ganache-cli][ganache-cli].
+Contracts are written in [Solidity](solidity) and tested using [Truffle](truffle) and [ganache-cli](ganache-cli).
 
 ### Dependencies
 
 ```bash
-# Install truffle and ganache-cli packages globally:
-$ npm install -g truffle ganache-cli
-
-# Install local node dependencies:
+# Install local node dependencies
 $ npm install
 ```
 
 ### Test
 
-
-Please see the [/test/token/ERC721/CryptoCarz/](/test/token/ERC721/CryptoCarz/) directory.
-
 ```bash
-# Run tests
+# Compile all smart contracts
+$ npm run build
+
+# Run all tests
 $ npm test
+
+# Run test coverage analysis
+$ npm run coverage
 ```
 
-[NYNJA coin]: https://nynjacoin.com/
+### Docker
+
+A Docker image to run containerized testing is provided. Requires [Docker Compose](docker compose).
+
+```bash
+# Build the container and run all tests
+$ make build test
+
+# Run a test for a single contract
+$ docker-compose run --rm truffle npm test test/CryptoCarzToken.test.js
+
 [ethereum]: https://www.ethereum.org/
 [solidity]: https://solidity.readthedocs.io/en/develop/
 [truffle]: http://truffleframework.com/
