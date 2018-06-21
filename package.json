@@ -31,7 +31,7 @@
     "openzeppelin-solidity": "1.9.0",
     "seedrandom": "^2.4.3",
     "solidity-coverage": "^0.2.2",
-    "truffle": "4.1.8",
+    "truffle": "4.1.11",
     "xtend": "^4.0.1",
     "yargs": "^8.0.2"
   }

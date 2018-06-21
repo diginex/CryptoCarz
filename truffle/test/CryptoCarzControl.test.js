@@ -1,18 +1,17 @@
-"use strict";
+'use strict';
 
 const CryptoCarzControl = artifacts.require("./CryptoCarzControl.sol");
 import assertRevert from './assertRevert';
 
-
 contract('CryptoCarzControl', function (accounts) {
 
-    let owner = accounts[9];
-    let manager = accounts[8]
-    let someoneElse = accounts[7];
-    let newOwner = accounts[6];
-    let newManager = accounts[5]
+    const owner = accounts[1];
+    const manager = accounts[2]
+    const someoneElse = accounts[3];
+    const newOwner = accounts[4];
+    const newManager = accounts[5]
 
-    let control;
+    let controlContract;
 
     async function checkSetOwner(contract, setOwner, owner, newOwner) {
         assert.equal(setOwner.logs[0].event, 'SetOwner');
@@ -42,65 +41,101 @@ contract('CryptoCarzControl', function (accounts) {
         assert.equal(paused, false, "paused should be false");
     }
 
+    async function checkUpgrade(contract, upgrade, _newContractAddress) {
+        assert.equal(upgrade.logs[0].event, 'ContractUpgrade');
+        assert.equal(upgrade.logs[0].args.newContractAddress.valueOf(), _newContractAddress);
+        assert.equal(upgrade.logs[1].event, 'Pause');
+        const newContractAddress = await contract.newContractAddress();
+        assert.equal(newContractAddress, _newContractAddress, "wrong new contract address");
+        const paused = await contract.paused();
+        assert.equal(paused, true, "paused should be true");
+    }
+
     beforeEach(async function () {
-        control = await CryptoCarzControl.new(owner, manager, { from: someoneElse });
+        controlContract = await CryptoCarzControl.new(owner, manager, { from: someoneElse });
     });
 
     describe('constructor', async function () {
         it('owner should be owner', async function () {
-            let ownerAccount = await control.owner();
+            const ownerAccount = await controlContract.owner();
             assert.equal(ownerAccount, owner, 'got wrong owner address');
         });
 
         it('manager should be manager', async function () {
-            let managerAccount = await control.manager();
+            const managerAccount = await controlContract.manager();
             assert.equal(managerAccount, manager, 'got wrong manager address');
+        });
+
+        it('owner cannot be 0x0', async function () {
+            await assertRevert(CryptoCarzControl.new(0x0, manager, { from: someoneElse }));
+        });
+
+        it('manager cannot be 0x0', async function () {
+            await assertRevert(CryptoCarzControl.new(owner, 0x0, { from: someoneElse }));
         });
     });
 
     describe('setters', async function () {
-        it('set owner', async function () {
-            await assertRevert(control.setOwner(newOwner, { from: someoneElse }));
-            let setOwner = await control.setOwner(newOwner, { from: owner });
-            await checkSetOwner(control, setOwner, owner, newOwner);
+        it('only the owner can change the owner', async function () {
+            await assertRevert(controlContract.setOwner(newOwner, { from: someoneElse }));
+            const setOwner = await controlContract.setOwner(newOwner, { from: owner });
+            await checkSetOwner(controlContract, setOwner, owner, newOwner);
         });
 
-        it('set manager', async function () {
-            await assertRevert(control.setManager(newManager, { from: someoneElse }));
-            let setManager = await control.setManager(newManager, { from: owner });
-            await checkSetManager(control, setManager, manager, newManager);
+        it('only the owner can change the manager', async function () {
+            await assertRevert(controlContract.setManager(newManager, { from: someoneElse }));
+            const setManager = await controlContract.setManager(newManager, { from: owner });
+            await checkSetManager(controlContract, setManager, manager, newManager);
+        });
+
+        it('owner cannot be set to 0x0', async function () {
+            await assertRevert(controlContract.setOwner(0x0, { from: owner }));
+        });
+
+        it('manager cannot be set to 0x0', async function () {
+            await assertRevert(controlContract.setManager(0x0, { from: owner }));
         });
     });
 
     describe('pause/unpause', async function () {
-        it('pause', async function () {
-            await assertRevert(control.pause({ from: someoneElse }));
-            let pause = await control.pause({ from: manager });
-            await checkPause(control, pause);
+        it('only control accounts can pause/unpause', async function () {
+            await assertRevert(controlContract.pause({ from: someoneElse }));
+            await controlContract.pause({ from: owner });
+            await assertRevert(controlContract.unpause({ from: someoneElse }));
         });
 
-        it('only control accounts can pause', async function () {
-            // TODO
+        it('owner can pause and unpause', async function () {
+            const pause = await controlContract.pause({ from: owner });
+            await checkPause(controlContract, pause);
+            const unpause = await controlContract.unpause({ from: owner });
+            await checkUnpause(controlContract, unpause);
         });
 
-        it('cannot pause if already paused', async function () {
-            // TODO
+        it('owner can pause but cannot unpause', async function () {
+            const pause = await controlContract.pause({ from: manager });
+            await checkPause(controlContract, pause);
+            await assertRevert(controlContract.unpause({ from: manager }));
+        });
+    });
+
+    describe('upgrade', async function () {
+        it('non-owner accounts cannot upgrade', async function () {
+            await assertRevert(controlContract.upgrade(someoneElse, { from: manager }));
         });
 
-        it('unpause', async function () {
-            let pause = await control.pause({ from: manager });
-            await assertRevert(control.unpause({ from: manager }));
-            let unpause = await control.unpause({ from: owner });
-            await checkUnpause(control, unpause);
+        it('cannot upgrade if paused', async function () {
+            await controlContract.pause({ from: owner });
+            assertRevert(controlContract.upgrade(someoneElse, { from: manager }));
+            await controlContract.unpause({ from: owner });
         });
 
-        it('cannot unpause if not paused', async function () {
-            // TODO
+        it('cannot upgrade to address 0x0', async function () {
+            assertRevert(controlContract.upgrade(0x0, { from: manager }));
         });
 
-        it('only owner can unpause', async function () {
-            // TODO
+        it('owner can upgrade, new contract address should be set and contract paused', async function () {
+            const upgrade = await controlContract.upgrade(someoneElse, { from: owner });
+            await checkUpgrade(controlContract, upgrade, someoneElse);
         });
     });
 });
-

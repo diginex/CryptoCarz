@@ -25,6 +25,8 @@ module.exports = {
     mocha: {
         useColors: true,
         slow: 30000,
-        bail: true
+        bail: true,
+        timeout: 3600000,
+        fullTrace: true
     }
 };

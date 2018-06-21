@@ -64,9 +64,9 @@ else
   truffle=../node_modules/.bin/truffle
 
   #$truffle test test/CryptoCarzToken.basic.test.js
-  $truffle test test/CryptoCarzAuction.test.js
   $truffle test test/CryptoCarzControl.test.js
   $truffle test test/CryptoCarzToken.test.js
+  $truffle test test/CryptoCarzAuction.test.js
 
   popd
 fi

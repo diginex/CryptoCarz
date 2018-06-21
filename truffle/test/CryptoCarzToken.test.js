@@ -6,109 +6,104 @@ import assertRevert from './assertRevert';
 
 contract('CryptoCarzToken', function (accounts) {
 
-    let owner = accounts[9];
-    let manager = accounts[8]
-    let someoneElse = accounts[7];
-    let users = accounts.slice(1, 3);
+    const owner = accounts[9];
+    const manager = accounts[8]
+    const someoneElse = accounts[7];
+    const users = accounts.slice(1, 3);
 
     let token;
 
-    async function checkMintTokens(token, mintTokens, tokenIds, seriesId, tokenOwner) {
-        // TODO: use map instead of for loop
-        for (let i = 0; i < tokenIds.length; i++) {
-            assert.equal(await token.tokenSeries(tokenIds[i]), seriesId);
-            assert.equal(await token.ownerOf(tokenIds[i]), tokenOwner);
-            // console.log(`mintTokens.logs[i].event = ${mintTokens.logs[i].event}`);
-            // console.log(`mintTokens.logs[i]._from = ${mintTokens.logs[i]._from}`);
-            // console.log(`mintTokens.logs[i]._to = ${mintTokens.logs[i]._to}`);
-            // console.log(`mintTokens.logs[i]._tokenId = ${mintTokens.logs[i]._tokenId}`);
+    async function checkCreateCars(token, createCars, carIds, seriesId, tokenOwner) {
+        for (let i = 0; i < carIds.length; i++) {
+            assert.equal(await token.carSeries(carIds[i]), seriesId);
+            assert.equal(await token.ownerOf(carIds[i]), tokenOwner);
         }
-        const mintTokensLogIndex = mintTokens.logs.length - 1;
-        assert.equal(mintTokens.logs[mintTokensLogIndex].event, 'MintTokens');
-        assert.equal(`${mintTokens.logs[mintTokensLogIndex].args.tokenIds.valueOf()}`, `${tokenIds}`);
-        assert.equal(mintTokens.logs[mintTokensLogIndex].args.seriesId.valueOf(), seriesId);
+        const createCarsLogIndex = createCars.logs.length - 1;
+        assert.equal(createCars.logs[createCarsLogIndex].event, 'CreateCars');
+        assert.equal(`${createCars.logs[createCarsLogIndex].args.tokenIds.valueOf()}`, `${carIds}`);
+        assert.equal(createCars.logs[createCarsLogIndex].args.seriesId.valueOf(), seriesId);
     }
 
-    async function checkCreateSeries(token, createSeries, seriesId, seriesMaxTokens) {
+    async function checkCreateSeries(token, createSeries, seriesId, seriesMaxCars) {
         assert.equal(createSeries.logs[0].event, 'CreateSeries');
         assert.equal(createSeries.logs[0].args.seriesId.valueOf(), seriesId);
-        assert.equal(createSeries.logs[0].args.seriesMaxTokens.valueOf(), seriesMaxTokens);
-        assert.equal(await token.getSeriesMaxTokens(seriesId), seriesMaxTokens);
+        assert.equal(createSeries.logs[0].args.seriesMaxCars.valueOf(), seriesMaxCars);
+        assert.equal(await token.seriesMaxCars(seriesId), seriesMaxCars);
     }
 
     beforeEach(async function () {
         token = await CryptoCarzToken.new(owner, manager, { from: someoneElse });
-        let createSeries = await token.createSeries(4, { from: manager });
+        const createSeries = await token.createSeries(4, { from: manager });
         await checkCreateSeries(token, createSeries, 0, 4);
     });
 
-    describe('mint tokens', async function () {
-        it('mint tokens', async function () {
-            let SERIES_COUNT = 3;
-            let SERIES_TOKEN_COUNT = 5;
+    describe('create cars', async function () {
+        it('create some cars', async function () {
+            const SERIES_COUNT = 3;
+            const SERIES_MAX_CARS = 5;
 
             for (let seriesId = 1; seriesId <= SERIES_COUNT; seriesId++) {
-                let totalSupply = await token.totalSupply({ from: someoneElse });
-                let createSeries = await token.createSeries(SERIES_TOKEN_COUNT, { from: manager });
-                await checkCreateSeries(token, createSeries, seriesId, SERIES_TOKEN_COUNT);
-                let tokenIds = Array(SERIES_TOKEN_COUNT).fill().map((x, i) => parseInt(i) + parseInt(totalSupply));
-                let mintTokens = await token.mintTokens(tokenIds, seriesId, { from: manager });
-                await checkMintTokens(token, mintTokens, tokenIds, seriesId, manager);
+                const totalSupply = await token.totalSupply({ from: someoneElse });
+                const createSeries = await token.createSeries(SERIES_MAX_CARS, { from: manager });
+                await checkCreateSeries(token, createSeries, seriesId, SERIES_MAX_CARS);
+                const carIds = Array(SERIES_MAX_CARS).fill().map((x, i) => parseInt(i) + parseInt(totalSupply));
+                const createCars = await token.createCars(carIds, seriesId, { from: manager });
+                await checkCreateCars(token, createCars, carIds, seriesId, manager);
             }
 
-            let totalSupply = await token.totalSupply({ from: someoneElse });
-            assert.equal(totalSupply, SERIES_COUNT * SERIES_TOKEN_COUNT, 'basic tokens count');
+            const totalSupply = await token.totalSupply({ from: someoneElse });
+            assert.equal(totalSupply, SERIES_COUNT * SERIES_MAX_CARS, 'basic tokens count');
         });
 
-        it('cannot mint tokens that are already minted', async function () {
-            let tokenIds = [0, 1, 2];
-            let seriesId = 0;
-
-            let mintTokens = await token.mintTokens(tokenIds, seriesId, { from: manager });
-            await checkMintTokens(token, mintTokens, tokenIds, seriesId, manager);
-
-            tokenIds = [1];
-            await assertRevert(token.mintTokens(tokenIds, seriesId, { from: manager }));
-
-            // can mint now with a new tokenId
-            tokenIds = [3];
-            mintTokens = await token.mintTokens(tokenIds, seriesId, { from: manager });
-            await checkMintTokens(token, mintTokens, tokenIds, seriesId, manager);
-        });
-
-        it('only manager can mint tokens', async function () {
-            const tokenIds = [0, 1, 2];
+        it('cannot create cars which were already created', async function () {
+            let carIds = [0, 1, 2];
             const seriesId = 0;
-            await assertRevert(token.mintTokens(tokenIds, seriesId, { from: owner }));
+
+            let createCars = await token.createCars(carIds, seriesId, { from: manager });
+            await checkCreateCars(token, createCars, carIds, seriesId, manager);
+
+            carIds = [1];
+            await assertRevert(token.createCars(carIds, seriesId, { from: manager }));
+
+            // can create a car now with a new carId
+            carIds = [3];
+            createCars = await token.createCars(carIds, seriesId, { from: manager });
+            await checkCreateCars(token, createCars, carIds, seriesId, manager);
         });
 
-        it('cannot mint tokens if paused', async function () {
-            let tokenIds = [0, 1, 2];
-            let seriesId = 0;
+        it('only manager can create new cars', async function () {
+            const carIds = [0, 1, 2];
+            const seriesId = 0;
+            await assertRevert(token.createCars(carIds, seriesId, { from: owner }));
+        });
 
-            let mintTokens = await token.mintTokens(tokenIds, seriesId, { from: manager });
-            await checkMintTokens(token, mintTokens, tokenIds, seriesId, manager);
+        it('cannot create new cars when paused', async function () {
+            let carIds = [0, 1, 2];
+            const seriesId = 0;
+
+            let createCars = await token.createCars(carIds, seriesId, { from: manager });
+            await checkCreateCars(token, createCars, carIds, seriesId, manager);
 
             await token.pause({ from: manager });
 
-            tokenIds = [3];
-            await assertRevert(token.mintTokens(tokenIds, seriesId, { from: manager }));
+            carIds = [3];
+            await assertRevert(token.createCars(carIds, seriesId, { from: manager }));
 
             await token.unpause({ from: owner });
 
-            mintTokens = await token.mintTokens(tokenIds, seriesId, { from: manager });
-            await checkMintTokens(token, mintTokens, tokenIds, seriesId, manager);
+            createCars = await token.createCars(carIds, seriesId, { from: manager });
+            await checkCreateCars(token, createCars, carIds, seriesId, manager);
         });
 
-        it('cannot mint tokens than the series max', async function () {
-            let tokenIds = [0, 1, 2];
-            let seriesId = 0;
+        it('cannot create more cars within a series than the series max number of cars', async function () {
+            let carIds = [0, 1, 2];
+            const seriesId = 0;
 
-            let mintTokens = await token.mintTokens(tokenIds, seriesId, { from: manager });
-            await checkMintTokens(token, mintTokens, tokenIds, seriesId, manager);
+            let createCars = await token.createCars(carIds, seriesId, { from: manager });
+            await checkCreateCars(token, createCars, carIds, seriesId, manager);
 
-            tokenIds = [3, 4, 5];
-            await assertRevert(token.mintTokens(tokenIds, seriesId, { from: manager }));
+            carIds = [3, 4, 5];
+            await assertRevert(token.createCars(carIds, seriesId, { from: manager }));
         });
     });
 
@@ -136,21 +131,14 @@ contract('CryptoCarzToken', function (accounts) {
 
     describe('transfer', async function () {
         beforeEach(async function () {
-            await token.mintTokens([0, 1, 2], 0, { from: manager });
+            await token.createCars([0, 1, 2], 0, { from: manager });
         });
 
         it('transfer tokens', async function () {
             // TODO: clean
             let ownerOf = await token.ownerOf(2);
-            console.log(`manager = ${manager}`);
-            console.log(`ownerOf = ${ownerOf}`);
-
             await token.safeTransferFrom(manager, users[0], 2, { from: manager });
-
             ownerOf = await token.ownerOf(2);
-            console.log(`users[0] = ${users[0]}`);
-            console.log(`ownerOf = ${ownerOf}`);
-
         });
     });
 });
