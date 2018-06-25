@@ -1,5 +1,15 @@
 {
   "compilerOptions": {
-    "lib": [ "es2015", "dom" ]
+    "lib": [ "es2015", "dom" ],
+    "target": "es6",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "importHelpers": true,
+    "noEmitHelpers": true,
+    "experimentalDecorators": true,
+    "sourceMap": true,
+    "rootDir": "src",
+    "outDir": "dist"
   }
 }
