@@ -8,7 +8,8 @@ contract('CryptoCarzToken', function (accounts) {
 
     const owner = accounts[9];
     const manager = accounts[8]
-    const someoneElse = accounts[7];
+    const treasurer = accounts[7]
+    const someoneElse = accounts[6];
     const users = accounts.slice(1, 3);
 
     let token;
@@ -32,9 +33,30 @@ contract('CryptoCarzToken', function (accounts) {
     }
 
     beforeEach(async function () {
-        token = await CryptoCarzToken.new(owner, manager, { from: someoneElse });
+        token = await CryptoCarzToken.new(owner, manager, treasurer, { from: someoneElse });
         const createSeries = await token.createSeries(4, { from: manager });
         await checkCreateSeries(token, createSeries, 0, 4);
+    });
+
+    describe('constructor', async function () {
+        it('treasurer cannot be 0x0', async function () {
+            // TODO
+        });
+
+        it('treasurer cannot be the same as the owner or the manager', async function () {
+            // TODO
+        });
+    });
+
+    describe('treasurer', async function () {
+        it('treasurer cannot be changed to 0x0', async function () {
+            // TODO
+        });
+
+        it('treasurer cannot be changed to be the same as the owner or the manager',
+            async function () {
+                // TODO
+            });
     });
 
     describe('create cars', async function () {
@@ -95,16 +117,17 @@ contract('CryptoCarzToken', function (accounts) {
             await checkCreateCars(token, createCars, carIds, seriesId, manager);
         });
 
-        it('cannot create more cars within a series than the series max number of cars', async function () {
-            let carIds = [0, 1, 2];
-            const seriesId = 0;
+        it('cannot create more cars within a series than the series max number of cars',
+            async function () {
+                let carIds = [0, 1, 2];
+                const seriesId = 0;
 
-            let createCars = await token.createCars(carIds, seriesId, { from: manager });
-            await checkCreateCars(token, createCars, carIds, seriesId, manager);
+                let createCars = await token.createCars(carIds, seriesId, { from: manager });
+                await checkCreateCars(token, createCars, carIds, seriesId, manager);
 
-            carIds = [3, 4, 5];
-            await assertRevert(token.createCars(carIds, seriesId, { from: manager }));
-        });
+                carIds = [3, 4, 5];
+                await assertRevert(token.createCars(carIds, seriesId, { from: manager }));
+            });
     });
 
     describe('series', async function () {
@@ -134,11 +157,26 @@ contract('CryptoCarzToken', function (accounts) {
             await token.createCars([0, 1, 2], 0, { from: manager });
         });
 
-        it('transfer tokens', async function () {
-            // TODO: clean
-            let ownerOf = await token.ownerOf(2);
-            await token.safeTransferFrom(manager, users[0], 2, { from: manager });
-            ownerOf = await token.ownerOf(2);
+        it('cannot transfer tokens if paused', async function () {
+            // TODO: clean and add basic token tests (make all asserted)
+            // TODO: make assert `safeTransferFrom`
+            console.log(`pause`);
+            await token.pause({ from: manager });
+            console.log(`safeTransferFrom`);
+            await assertRevert(token.transferFrom(manager, users[0], 0, { from: manager }));
+            await assertRevert(token.safeTransferFrom(manager, users[0], 1, { from: manager }));
+            await assertRevert(token.safeTransfersFrom(manager, users[0], [2], { from: manager }));
+            console.log(`unpause`);
+            await token.unpause({ from: owner });
+            console.log(`safeTransferFrom`);
+            await token.transferFrom(manager, users[0], 0, { from: manager });
+            await token.safeTransferFrom(manager, users[0], 1, { from: manager });
+            await token.safeTransfersFrom(manager, users[0], [2], { from: manager });
         });
+    });
+
+
+    describe('upgrade', async function () {
+        // TODO
     });
 });

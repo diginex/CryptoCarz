@@ -73,29 +73,35 @@ contract CryptoCarzControl {
 
     /// @dev CryptoCarzControl constructor function.
     ///      Initializes the owner and manager accounts, which cannot be 0x0.
+    ///      Owner and manager accounts must not be the same.
     /// @param _owner The owner account.
     /// @param _manager The manager account.
     constructor(address _owner, address _manager) public {
         require(_owner != address(0));
         require(_manager != address(0));
+        require(_owner != _manager);
         owner = _owner;
         manager = _manager;
     }
 
     /// @dev Owner account setter.
-    ///      Onwer cannot be 0x0. Only the current owner can change the owner.
+    ///      Owner cannot be 0x0. Only the current owner can change the owner.
+    ///      Owner and manager accounts must not be the same.
     /// @param _newOwner The new owner address.
     function setOwner(address _newOwner) external onlyOwner {
         require(_newOwner != address(0));
+        require(_newOwner != manager);
         emit SetOwner(owner, _newOwner);
         owner = _newOwner;
     }
 
     /// @dev Manager account setter.
     ///      Manager cannot be 0x0. Only the current owner can change the manager.
+    ///      Owner and manager accounts must not be the same.
     /// @param _newManager The new owner address.
     function setManager(address _newManager) external onlyOwner {
         require(_newManager != address(0));
+        require(_newManager != owner);
         emit SetManager(manager, _newManager);
         manager = _newManager;
     }

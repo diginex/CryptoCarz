@@ -2,6 +2,7 @@
 
 const CryptoCarzControl = artifacts.require("./CryptoCarzControl.sol");
 import assertRevert from './assertRevert';
+import constants from './constants';
 
 contract('CryptoCarzControl', function (accounts) {
 
@@ -67,11 +68,15 @@ contract('CryptoCarzControl', function (accounts) {
         });
 
         it('owner cannot be 0x0', async function () {
-            await assertRevert(CryptoCarzControl.new(0x0, manager, { from: someoneElse }));
+            await assertRevert(CryptoCarzControl.new(constants.ZERO_ADDRESS, manager, { from: someoneElse }));
         });
 
         it('manager cannot be 0x0', async function () {
-            await assertRevert(CryptoCarzControl.new(owner, 0x0, { from: someoneElse }));
+            await assertRevert(CryptoCarzControl.new(owner, constants.ZERO_ADDRESS, { from: someoneElse }));
+        });
+
+        it('owner and manager cannot be same account', async function () {
+            await assertRevert(CryptoCarzControl.new(owner, owner, { from: someoneElse }));
         });
     });
 
@@ -89,11 +94,17 @@ contract('CryptoCarzControl', function (accounts) {
         });
 
         it('owner cannot be set to 0x0', async function () {
-            await assertRevert(controlContract.setOwner(0x0, { from: owner }));
+            await assertRevert(controlContract.setOwner(constants.ZERO_ADDRESS, { from: owner }));
         });
 
         it('manager cannot be set to 0x0', async function () {
-            await assertRevert(controlContract.setManager(0x0, { from: owner }));
+            await assertRevert(controlContract.setManager(constants.ZERO_ADDRESS, { from: owner }));
+        });
+
+        it('owner and manager cannot be same account', async function () {
+            await controlContract.setManager(newManager, { from: owner });
+            await assertRevert(controlContract.setOwner(newManager, { from: owner }));
+            await assertRevert(controlContract.setManager(owner, { from: owner }));
         });
     });
 
@@ -130,7 +141,7 @@ contract('CryptoCarzControl', function (accounts) {
         });
 
         it('cannot upgrade to address 0x0', async function () {
-            assertRevert(controlContract.upgrade(0x0, { from: manager }));
+            assertRevert(controlContract.upgrade(constants.ZERO_ADDRESS, { from: manager }));
         });
 
         it('owner can upgrade, new contract address should be set and contract paused', async function () {

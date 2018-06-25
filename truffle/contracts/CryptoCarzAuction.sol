@@ -1,6 +1,7 @@
 pragma solidity 0.4.24;
 
 import "../../node_modules/openzeppelin-solidity/contracts/math/SafeMath.sol";
+import "../../node_modules/openzeppelin-solidity/contracts/token/ERC721/ERC721Receiver.sol";
 import "./CryptoCarzToken.sol";
 import "./CryptoCarzControl.sol";
 
@@ -11,22 +12,22 @@ import "./CryptoCarzControl.sol";
 ///
 ///          A fixed number of cars are sold for the same price. Each bidder in the auction can
 ///          submit one or multiple bids to buy one car token. Bids are public (i.e. not sealed).
-///          Participants bid by sending ether to `bid` function. Participants can top and cancel
-///          their bids anytime until the bidding period is ended.
+///          Participants bid by sending ether to the `bid` function. Participants can top and
+///          cancel their bids anytime until the bidding period is ended.
 ///
-///          Once the bidding period ends, the final car prize is calculated off-chain (to save gas
+///          Once the bidding period ends, the final car price is calculated off-chain (to save gas
 ///          fees) and set in the contract by the manager account. Winning bidders are those whose
-///          total bid amount is equal or greater than car prize, whereas the rest of bidders are
+///          total bid amount is equal or greater than car price, whereas the rest of bidders are
 ///          losing bidders.
 ///
 ///          All winning bidders pay a per-unit price equal to the lowest winning bid regardless of
 ///          their actual bid. Winning bidders must redeem their car tokens and request to transfer
-///          any bidden ether amount exceding the final car prize back to their accounts.
+///          any bidden ether amount exceeding the final car price back to their accounts.
 ///          Losing bidders must request to transfer the bidding amount back to their accounts.
 ///
 ///          The manager account can extend the bidding period, pause the auction or cancel it.
 /// @dev     The auctioned tokens need to be transferred to the contract before the auction starts.
-contract CryptoCarzAuction is CryptoCarzControl {
+contract CryptoCarzAuction is ERC721Receiver, CryptoCarzControl {
 
     using SafeMath for uint256;
 
@@ -43,7 +44,7 @@ contract CryptoCarzAuction is CryptoCarzControl {
     mapping(address => uint256) public bids;
     address[] public bidders;
     uint256 public carPrice;
-    uint256 public numWinners;
+    uint256 public numCarsSold;
     mapping(address => bool) public carClaimed;
     uint256 public numCarsTransferred;
     bool public withdrawn;
@@ -58,13 +59,12 @@ contract CryptoCarzAuction is CryptoCarzControl {
     event ManagerWithdrawCars(address indexed carsTo, uint256 numCars);
     event AuctionExtended(uint256 biddingEndTime);
     event AuctionCancelled();
-    
-    
+
     /// @dev Throws if the current time is not before the bidding end time.
     ///      Auction must be initialized.
     modifier beforeBiddingEndTime() {
         require(initialized);
-        require(now < biddingEndTime);
+        require(block.timestamp < biddingEndTime);
         _;
     }
 
@@ -72,7 +72,7 @@ contract CryptoCarzAuction is CryptoCarzControl {
     ///      Auction must be initialized.
     modifier afterBiddingEndTime() {
         require(initialized);
-        require(now >= biddingEndTime);
+        require(block.timestamp >= biddingEndTime);
         _;
     }
 
@@ -94,6 +94,21 @@ contract CryptoCarzAuction is CryptoCarzControl {
         token = CryptoCarzToken(_token);
     }
 
+    /// @dev This contract is not supposed to receive Ether except when calling the `bid` function.
+    function() external payable {
+        revert();
+    }
+
+    /// @dev Implementation of ERC721Receiver interface as per EIP-721 specification:
+    ///       https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
+    /// @param _from The sending address.
+    /// @param _tokenId The NFT identifier which is being transfered.
+    /// @param _data Additional data with no specified format.
+    /// @return `bytes4(keccak256("onERC721Received(address,uint256,bytes)"))`
+    function onERC721Received(address _from, uint256 _tokenId, bytes _data) public returns(bytes4) {
+        return ERC721_RECEIVED;
+    }
+
     /// @dev Starts the auction. Performs necessary preliminary checks before allowing bidding and
     ///      bid cancellations:
     ///      1- Check that auction contract actually owns the auctioned car tokens.
@@ -109,14 +124,21 @@ contract CryptoCarzAuction is CryptoCarzControl {
 
         // input validations
         require(_carIds.length > 0);
-        require(now < _biddingEndTime);
-        uint256 duration = _biddingEndTime.sub(now);
+        require(block.timestamp < _biddingEndTime);
+        uint256 duration = _biddingEndTime.sub(block.timestamp);
         require(duration > MIN_AUCTION_PERIOD_SEC);
         require(duration < MAX_AUCTION_PERIOD_SEC);
 
-        // check that the auction contract actually owns the auctioned car tokens.
-        for (uint256 i = 0; i < carIds.length; i++) {
-            require(token.ownerOf(carIds[i]) == address(this));
+        uint256 carSeries = token.getCarSeries(_carIds[0]);
+        for (uint256 i = 0; i < _carIds.length; i++) {
+            // check that the auction contract actually owns the auctioned car tokens
+            require(token.ownerOf(_carIds[i]) == address(this));
+            if (i > 0) {
+                if (carSeries != token.getCarSeries(_carIds[i])) {
+                    // all auctioned cars should belong to the same series
+                    revert();
+                }
+            }
         }
 
         // initialize contract
@@ -129,7 +151,8 @@ contract CryptoCarzAuction is CryptoCarzControl {
 
     /// @dev Cancels the auction. If an auction is cancelled, no cars are sold and so participants
     ///      can withdraw their bidding amounts. It is possible to cancel an auction only if the
-    ///      bidding end time has not yet been reached. Only the manager can cancel an auction.
+    ///      bidding end time has not yet been reached. This function can be called only if the
+    ///      auction was not already cancelled. Only the manager can cancel an auction.
     function cancelAuction() external onlyManager beforeBiddingEndTime ifNotCancelled {
         transferUnsoldCars(manager);
 
@@ -146,7 +169,7 @@ contract CryptoCarzAuction is CryptoCarzControl {
         beforeBiddingEndTime ifNotCancelled {
 
         require(_newBiddingEndTime > biddingEndTime);
-        require(_newBiddingEndTime.sub(now) <= MAX_AUCTION_PERIOD_SEC);
+        require(_newBiddingEndTime.sub(block.timestamp) <= MAX_AUCTION_PERIOD_SEC);
 
         biddingEndTime = _newBiddingEndTime;
 
@@ -194,37 +217,40 @@ contract CryptoCarzAuction is CryptoCarzControl {
     }
 
     /// @dev Returns the amount bid by a participant.
+    /// @param _bidder The bidder address from which to return the amount bidden.
     /// @return The current total amount bid by the bidder.
     function getBidAmount(address _bidder) external view returns (uint256) {
         return bids[_bidder];
     }
 
-    /// @dev Setter of the final car prize. Only the bidders whose total bid amount is equal or
-    ///      higher than the car prize can redeem a car. These bidders are so called "auction
+    /// @dev Setter of the final car price. Only the bidders whose total bid amount is equal or
+    ///      higher than the car price can redeem a car. These bidders are so called "auction
     ///      winners", whereas the rest of bidders are "auction losers".
-    ///      If the number of auction winners is greater than the number of auctioned cars, they
-    ///      will be transferred to th winners on a first-come first-served basis.
+    ///      If the number of auction winners is greater than the number of auctioned cars, the cars
+    ///      will be transferred on a first-come first-served basis, that is, the last winners
+    ///      to claim their cars will not get them if the cars have already been sold out. In that
+    ///      case, those winners can withdraw their bids.
     ///      The number of auction winners can be zero.
-    ///      The car prize can be set only after the bidding time has finalized.
+    ///      The car price can be set only after the bidding time has finalized.
     ///      Only the manager can call this function.
-    ///      Note that the car prize is calculated off-chain. This is done to save gas fees.
+    ///      Note that `_carPrice` is calculated off-chain. This is done to save gas fees.
+    ///      The value of `_carPrice` must always maximize the number of cars sold.
     /// @param _carPrice The price of a car, in ether.
     function setCarPrice(uint256 _carPrice) external afterBiddingEndTime ifNotCancelled onlyManager {
         require(carPrice == 0);
         require(_carPrice > 0);
         require(bidders.length > 0);
 
-        // Calculate number of winners for the given car price.
         carPrice = _carPrice;
-        for (uint256 i = 0; i < bidders.length; i++) {
-            if (bids[bidders[i]] >= carPrice) {
-                numWinners++;
-            }
+        if (bidders.length < carIds.length) {
+            numCarsSold = bidders.length;
+        } else {
+            numCarsSold = carIds.length;
         }
     }
 
-    /// @dev Getter of the final car prize.
-    /// @return The car prize.
+    /// @dev Getter of the car price.
+    /// @return The current car price.
     function getCarPrice() external view returns (uint256) {
         return carPrice;
     }
@@ -245,42 +271,50 @@ contract CryptoCarzAuction is CryptoCarzControl {
     }
 
     /// @dev Transfers one of the auctioned cars to its rightful bidding winner. This function can
-    ///      be called only after the bidding end time.
-    ///      Optionally, anyone can call this function on behalf of the bidder (e.g. an account
-    ///      belonging to CryptoCarz, so that the bidder does not need to redeem the car himself).
-    /// @param _bidder The bidder address.
-    function redeemCar(address _bidder) external afterBiddingEndTime {
+    ///      be called only after the bidding end time. The winner himself must call this function
+    ///      to redeem his car.
+    function redeemCar() external afterBiddingEndTime {
         require(carPrice > 0);
-        require(isWinner(_bidder));
+        require(isWinner(msg.sender));
         require(numCarsTransferred < carIds.length);
-        require(!carClaimed[_bidder]);
+        require(!carClaimed[msg.sender]);
 
         // send car to its owner
-        carClaimed[_bidder] = true; // cannot claim more than once
+        carClaimed[msg.sender] = true; // cannot claim more than once
         uint256 carId = carIds[numCarsTransferred];
         numCarsTransferred++;
-        token.transferFrom(address(this), _bidder, carId);
+        token.safeTransferFrom(address(this), msg.sender, carId);
 
         // return any excess of bidden ether to the bidder
-        uint256 bidExcessAmount = bids[_bidder].sub(carPrice);
-        _bidder.transfer(bidExcessAmount);
+        uint256 bidExcessAmount = bids[msg.sender].sub(carPrice);
+        if (bidExcessAmount > 0) {
+            msg.sender.transfer(bidExcessAmount);
+        }
 
-        emit CarRedeemed(_bidder, carId, bidExcessAmount);
+        emit CarRedeemed(msg.sender, carId, bidExcessAmount);
     }
 
     /// @dev All bidders can withdraw their bid amounts after the bidding end time.
-    ///      Once the final car prize has been set, only auction losers can withdraw their bid
-    ///      amounts after the bidding end time.
-    ///      Only the bidders themselves can call this function on their behalf.
-    function withdrawBid() external afterBiddingEndTime {
-        require(!isWinner(msg.sender));
-        uint256 bidAmount = bids[msg.sender];
+    ///      Once the final car price has been set, auction losers can withdraw their bid
+    ///      amounts after the bidding end time. Also, if a winner cannot redeem a car because cars
+    ///      are already sold out (this scenario is possible if number of winners is greater than
+    ///      the number of auctioned cars), the winner can also withdraw his bid.
+    ///      Optionally, anyone can call this function on behalf of a bidder.
+    /// @param _bidder The bidder address.
+    function withdrawBid(address _bidder) external afterBiddingEndTime {
+        if (isWinner(_bidder)) {
+            // allow a winner to withdraw his bidden amount if cars are already sold out
+            require(numCarsTransferred >= carIds.length);
+            // as far as the winner did not redeem the car yet
+            require(!carClaimed[_bidder]);
+        }
+        uint256 bidAmount = bids[_bidder];
         require(bidAmount > 0);
 
-        bids[msg.sender] = 0; // cannot withdraw bids more than once
-        msg.sender.transfer(bidAmount);
+        bids[_bidder] = 0; // cannot withdraw bids more than once
+        _bidder.transfer(bidAmount);
 
-        emit WithdrawBid(msg.sender, bidAmount);
+        emit WithdrawBid(_bidder, bidAmount);
     }
 
     /// @dev Transfer out the any unsold cars back to specific address given by the manager.
@@ -288,35 +322,33 @@ contract CryptoCarzAuction is CryptoCarzControl {
     function transferUnsoldCars(address _to) internal onlyManager {
         require(_to != address(0));
 
-        uint256 numCars = carIds.length.sub(numWinners);
+        uint256 numCars = carIds.length.sub(numCarsSold);
         for (uint256 i = 0; i < numCars; i++) {
             uint256 carId = carIds[numCarsTransferred];
             numCarsTransferred++;
-            token.transferFrom(address(this), _to, carId);
+            token.safeTransferFrom(address(this), _to, carId);
         }
 
         emit ManagerWithdrawCars(_to, numCars);
     }
 
-    /// @dev Transfer out the earnings from the auctioned cars to a specific address. Also, transfer
-    //       any cars that were not sold in the auction. This function can be called only once after
-    ///      the bidding end time, and only by the manager.
-    /// @param _etherTo The address to send the ether to.
-    /// @param _carsTo The address to send the unsold cars to.
-    function withdraw(address _etherTo, address _carsTo) external afterBiddingEndTime onlyManager {
+    /// @dev Transfer out the earnings from the auctioned cars to CryptoCarz's treasurer. Transfer
+    //       any cars that were not sold in the auction to manager. This function can be called only
+    ///      once after the bidding end time, and only by the manager.
+    function withdraw() external afterBiddingEndTime onlyManager {
         require(carPrice > 0);
         require(!withdrawn);
-        require(_etherTo != address(0));
-        require(_carsTo != address(0));
+        address treasurer = token.getTreasurer();
+        require(treasurer != address(0));
 
         // transfer ether from sold cars
-        uint256 amount = carPrice.mul(numWinners);
-        _etherTo.transfer(amount);
+        uint256 amount = carPrice.mul(numCarsSold);
+        treasurer.transfer(amount);
 
-        emit ManagerWithdrawEther(_etherTo, amount);
+        emit ManagerWithdrawEther(treasurer, amount);
 
         // transfer unsold cars
-        transferUnsoldCars(_carsTo);
+        transferUnsoldCars(manager);
 
         withdrawn = true; // cannot withdraw more than once
     }
