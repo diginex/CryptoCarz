@@ -111,7 +111,6 @@ contract CryptoCarzToken is ERC721Token, CryptoCarzControl {
         require(seriesCarCount[_seriesId] <= seriesMaxCars[_seriesId]);
 
         for (uint256 i = 0; i < _tokenIds.length; i++) {
-            require(carSeries[_tokenIds[i]] == 0);
             _mint(manager, _tokenIds[i]);
             carSeries[_tokenIds[i]] = _seriesId;
         }
