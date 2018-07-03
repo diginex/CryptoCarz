@@ -10,7 +10,9 @@ const RPC_SERVER_ADDRESS = 'https://rinkeby.infura.io';
 //const RPC_SERVER_ADDRESS = 'https://ropsten.infura.io';
 //const RPC_SERVER_ADDRESS = 'http://localhost:8545';
 
-const TOKEN_CONTRACT_ADDRESS = '0x5fbc1236fBBac26B70847a8CC520fe2E9c67ec5b'; // Rinkeby
+const TOKEN_CONTRACT_ADDRESS = '0x00033CeD3f3dcdD0825D5f56f98cF402BC94fcFA'; // Rinkeby
+//const TOKEN_CONTRACT_ADDRESS = '0x49df2ba30b88114191f48c58377E67306f874286'; // Ropsten
+
 
 function getWeb3() {
     const web3 = new Web3(new Web3.providers.HttpProvider(RPC_SERVER_ADDRESS));
@@ -65,8 +67,11 @@ async function deployContract(contractName: string): Promise<string> {
     const gasPrice = gasPriceGWei * 10 ** 9;
     const abi = rawData['abi'];
     const bytecode = rawData['bytecode'];
-    const constructorParameters = ['0xcE1b28c91391E29ce0c69172Fe992793c1B4Ad96', '0x7d068eB54D3160a24e3a80A4C4D148d07FB3F4e1'];
-    const gasEstimate = 4000000;
+    const constructorParameters = [ '0xcE1b28c91391E29ce0c69172Fe992793c1B4Ad96',
+                                    '0x7d068eB54D3160a24e3a80A4C4D148d07FB3F4e1',
+                                    '0xa9B8Fd4e7199E108bb28c6ed1c3C6fC79f1Dc1e3'
+    ];
+    const gasEstimate = 4200000;
 
     const serializedTx = await createSignedSmartContractCreationTransaction(
         fromPrivateKey, abi, bytecode, constructorParameters,
@@ -103,7 +108,7 @@ async function createSignedFunctionCallTransaction(
 
 async function createAuction(tokenContract: any) {
     const serializedTx = await createSignedFunctionCallTransaction(
-        tokenContract, 'createAuction', [], 10 ** 9, 1500000);
+        tokenContract, 'createAuction', [], 10 ** 9, 1700000);
     console.log(`serializedTx = ${serializedTx}`);
     console.log(`serializedTx.length = ${serializedTx.length}`);
     const txHash = await getWeb3().eth.sendRawTransaction(serializedTx);
