@@ -25,3 +25,12 @@ test_unit:
   stage: test
   script:
     - docker run --rm $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG bash scripts/test.sh
+
+solidity_coverage:
+  stage: test
+  script:
+    - docker run --rm --volume $CI_PROJECT_DIR/coverage:/code/truffle/coverage $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG bash scripts/coverage.sh
+  coverage: '/All files[ |]+[0-9.]+[ |]+([0-9.]+)/'
+  artifacts:
+    paths:
+      - coverage/
