@@ -21,28 +21,40 @@ contract('CryptoCarzAuction', function (accounts) {
     // gas limit and utilization.
     const MAX_GAS_USED = 4000000;
 
+    // All transactions require to pay gas fees. This parameters serves as
+    // a rough estimation of what the maximum percentage of the total transaction
+    // ETH difference would be due to gas fees.
     let GAS_TOLERANCE_PERCENT = 5;
 
     const CAR_IDS = [1, 2, 3, 4, 5];
+    const CAR_PRICE = 100;
     const BIDDING_PERIOD = 1 * constants.WEEK;
 
-    const DEFAULT_MAX_ITER = 15;
+    // Number of transactions needed for `validateCarPrice()` to complete the
+    // car price validation
+    const NUM_VALIDATION_TRANSACTIONS = 2;
 
-    const NUM_ACCOUNTS = process.env.NUM_ACCOUNTS || 30;
+    const NUM_ACCOUNTS = process.env.NUM_ACCOUNTS;
     const owner = accounts[NUM_ACCOUNTS - 1];
     const manager = accounts[NUM_ACCOUNTS - 2];
     const treasurer = accounts[NUM_ACCOUNTS - 3];
     const someoneElse = accounts[NUM_ACCOUNTS - 4];
     const users = accounts.slice(1, NUM_ACCOUNTS - 5);
 
+    // realistic auction test parameters
     const NUM_BIDDERS = NUM_ACCOUNTS - 10;
     const NUM_BID_UPGRADES = 2;
+
+    // Maximum number of loop iterations inside `validateCarPrice()`
     // MAX_ITER = 50  => ~450k gas per validateCarPrice() call
     // MAX_ITER = 500 => ~3.5m gas per validateCarPrice() call
     const MAX_ITER = 500;
+
     let token;
     let auction;
     let now;
+    let bids, losers, winners, bidders;
+    let expectedSeriesId;
 
     function assertSimilarBalance(current, expected) {
         let diff = current.minus(expected);
@@ -125,7 +137,12 @@ contract('CryptoCarzAuction', function (accounts) {
 
     async function assertedWithdrawBid(auction, withdrawer, bidAmount) {
         const isWinner = await auction.isWinner(withdrawer, { from: someoneElse });
-        assert.equal(isWinner, false, `bidder needs to be an auction loser to withdraw a bid`);
+        assert.isBoolean(isWinner, `isWinner did not return a boolean ${isWinner}`);
+        if (isWinner) {
+            const numCarsTransferred = (await auction.numCarsTransferred.call()).toNumber();
+            assert.equal(numCarsTransferred, CAR_IDS.length,
+                `auction winners need to wait until cars are sold out before withdrawing a bid`);
+        }
         const balanceBefore = new BigNumber(await web3.eth.getBalance(withdrawer));
 
         const withdrawBid = await auction.withdrawBid({ from: withdrawer });
@@ -145,33 +162,59 @@ contract('CryptoCarzAuction', function (accounts) {
         auction, expectedEtherAmountInWei, expectNumCars, account) {
         const balanceBefore = new BigNumber(await web3.eth.getBalance(treasurer));
 
+        const numCars = (await token.balanceOf(auction.address)).toNumber();
+        const tokenIds = await Promise.all(Array.from(Array(numCars).keys()).map((index) => {
+            return token.tokenOfOwnerByIndex(auction.address, index);
+        }));
+        const carsOwned = (await Promise.all(tokenIds.map((id) => token.ownerOf(id))))
+            .filter((owner) => owner === auction.address)
+            .length;
+        assert.equal(carsOwned, numCars,
+            `not all tokens are owned by auction contract`);
+
         const withdraw = await auction.withdraw({ from: account });
-        // TODO: check withdraw
+
+        assert.equal(withdraw.logs[0].event, 'ManagerWithdrawEther');
+        assert.equal(withdraw.logs[0].args.etherTo.valueOf(), treasurer);
+        assert.equal(withdraw.logs[0].args.amount.valueOf(), expectedEtherAmountInWei);
+        assert.equal(withdraw.logs[1].event, 'ManagerWithdrawCars');
+        assert.equal(withdraw.logs[1].args.carsTo.valueOf(), account);
+        assert.equal(withdraw.logs[1].args.numCars.valueOf(), expectNumCars);
 
         const balanceAfter = new BigNumber(await web3.eth.getBalance(treasurer));
+        const carsOwnedAfter = (await Promise.all(tokenIds.map((id) => token.ownerOf(id))))
+            .filter((owner) => owner === account)
+            .length;
 
         balanceAfter.should.be.bignumber.equal(balanceBefore.plus(expectedEtherAmountInWei),
             `wrong balance amount ${balanceAfter}`);
-        // TODO: check num cars too
+        assert.equal(carsOwnedAfter, expectNumCars,
+            `wrong number of cars owned by manager ${carsOwnedAfter}`);
     }
 
     async function assertedCreateTokenContract() {
         token = await CryptoCarzToken.new(owner, manager, treasurer, { from: someoneElse });
+        expectedSeriesId = 0;
         return token
     }
 
     async function assertedCreateAuctionContract(tokenContractAddress) {
-        const auction = await CryptoCarzAuction.new(owner, manager, tokenContractAddress, { from: someoneElse });
-        return auction;
+        return await CryptoCarzAuction.new(owner, manager, tokenContractAddress, { from: someoneElse });
     }
 
     async function assertedCreateCars(token, carIds) {
-        await token.createSeries(carIds.length, { from: manager });
-        await token.createCars(carIds, 0, { from: manager });
+        const createSeries = await token.createSeries(carIds.length, { from: manager });
+        assert.equal(createSeries.logs[0].event, 'CreateSeries');
+        assert.equal(createSeries.logs[0].args.seriesId.valueOf(), expectedSeriesId);
+        assert.equal(createSeries.logs[0].args.seriesMaxCars.valueOf(), carIds.length);
+        expectedSeriesId += 1;
+        await token.createCars(carIds, createSeries.logs[0].args.seriesId, { from: manager });
     }
 
     async function assertedCreateAuction(token, auction, carIds, biddingPeriod, account) {
-        await token.safeTransfersFrom(manager, auction.address, carIds, { from: manager });
+        if (carIds.length > 0) {
+            await token.safeTransfersFrom(manager, auction.address, carIds, { from: manager });
+        }
         const now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
         const biddingEndTime = now + biddingPeriod;
         // console.log(`now = ${now}`);
@@ -200,28 +243,49 @@ contract('CryptoCarzAuction', function (accounts) {
 
     async function assertedSetCarPrice(auction, carPrice, account) {
         await auction.setCarPrice(carPrice, { from: account });
-        carPrice.should.be.bignumber.equal(await auction.carPrice.call(), `Wrong car price`);
+        carPrice.should.be.bignumber.equal(await auction.getCarPrice(), `Wrong car price`);
         const numWinnersCounted = (await auction.numWinnersCounted.call()).toNumber();
-        console.log(`numWinnersCounted = ${numWinnersCounted}`);
         assert.equal(0, numWinnersCounted,
             `numWinnersCounted should be reset to 0`);
         assert.equal(0, (await auction.lastCheckedBidderIndex.call()).toNumber(),
             `lastCheckedBidderIndex should be reset to 0`);
+
+        const numBidders = (await auction.getBidders()).length;
+        const numCars = (await auction.getCarIds()).length;
+        const numCarsSold = (await auction.numCarsSold.call()).toNumber();
+        if (numCars >= numBidders) {
+            assert.equal(numCarsSold, numBidders, `Not enough bidders to sell all cars`);
+        } else {
+            assert.equal(numCarsSold, numCars, `Enough bidders to sell all cars`);
+        }
+    }
+
+    async function assertedValidateCarPriceInMultipleTransactions(
+        auction, account, carPrice, carIdsLength, biddersLength, numTransactions) {
+
+        const maxIter = Math.ceil(biddersLength / numTransactions);
+        assert.isAtLeast(maxIter, 2, `The number of iterations should at least be 2`);
+        await auction.setMaxIter(maxIter, { from: account });
+
+        for (let i = 0; i < numTransactions; i++) {
+            // console.log(`------------`);
+            // console.log(`carPrice = ${(await auction.carPrice.call()).toNumber()}`);
+            // console.log(`lastCheckedBidderIndex = ${(await auction.lastCheckedBidderIndex.call()).toNumber()}`);
+            // console.log(`numWinnersCounted = ${(await auction.numWinnersCounted.call()).toNumber()}`);
+            // console.log(`numCarsSold = ${(await auction.numCarsSold.call()).toNumber()}`);
+            // console.log(`------------`);
+            await assertedValidateCarPrice(auction, manager, carPrice, carIdsLength, biddersLength, i == (numTransactions - 1));
+        }
     }
 
     async function assertedValidateCarPrice(
         auction, account, carPrice, carIdsLength, biddersLength, isValidated) {
-
         const validateCarPrice = await auction.validateCarPrice({ from: account });
-        //console.log(`validateCarPrice = ${JSON.stringify(validateCarPrice)}`);
-        //console.log(`validateCarPrice.receipt.gasUsed = ${validateCarPrice['receipt']['gasUsed']}`);
         const gasUsed = parseInt(validateCarPrice['receipt']['gasUsed']);
-        console.log(`validateCarPrice: gasUsed = ${gasUsed}`);
+        //console.log(`validateCarPrice: gasUsed = ${gasUsed}`);
         assert.isAtMost(gasUsed, MAX_GAS_USED, `Transaction used too much gas`);
-
-        const carPrice2 = await auction.carPrice.call({ from: someoneElse });
+        const carPrice2 = await auction.getCarPrice();
         carPrice.should.be.bignumber.equal(carPrice2, `Wrong car price`);
-
         const carPriceValidated = await auction.carPriceValidated.call({ from: someoneElse });
 
         if (typeof carIdsLength !== 'undefined' &&
@@ -251,6 +315,58 @@ contract('CryptoCarzAuction', function (accounts) {
                 }
             }
         }
+    }
+
+    async function assertNumWinners(auction, expectedNumWinners, message) {
+        const numWinnersPromise = Array.from(Array(users.length).keys()).map((index) => {
+            return auction.isWinner(users[index]);
+        });
+        const numWinners = await Promise.all(numWinnersPromise);
+        assert.equal(numWinners.filter((isWinner) => isWinner === true).length, expectedNumWinners, message);
+    }
+
+    function getRandomInt(min, max) {
+        return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    async function buildTestAuction() {
+        token = await assertedCreateTokenContract();
+        auction = await assertedCreateAuctionContract(token.address);
+
+        // Create a few random car series to ensure we're not relying on seriesId 0.
+        for (let i = 0; i < getRandomInt(1, 5); i++) {
+            await assertedCreateCars(token, [CAR_IDS.length + 1 + i]);
+        }
+        await assertedCreateCars(token, CAR_IDS);
+        await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD, manager);
+    }
+
+    async function buildTestBids() {
+        const numWinners = CAR_IDS.length + 1; // more winners than cars
+        const numLosers = 5;
+
+        let j = 0;
+        bids = {};
+        bidders = [];
+        losers = [];
+        winners = [];
+        // loser bids
+        for (let i = 0; i < numLosers; i++) {
+            const bid = CAR_PRICE - 1;
+            bids[users[j]] = bid;
+            await assertedBid(auction, users[j], bid);
+            losers.push(users[j]);
+            j++;
+        }
+        // winner bids
+        for (let i = 0; i < numWinners; i++) {
+            const bid = CAR_PRICE;
+            bids[users[j]] = bid;
+            await assertedBid(auction, users[j], bid);
+            winners.push(users[j]);
+            j++;
+        }
+        bidders = losers.concat(winners);
     }
 
     describe('constructor', async function () {
@@ -305,13 +421,22 @@ contract('CryptoCarzAuction', function (accounts) {
             now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
         });
 
+        it('contract can only be initialized once', async function () {
+            await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD, manager);
+            await assertRevert(auction.newAuction(CAR_IDS, now + BIDDING_PERIOD, { from: manager }));
+        });
+
         it('at least 1 car must be auctioned', async function () {
             await assertRevert(assertedCreateAuction(token, auction, [], BIDDING_PERIOD, manager));
             await assertedCreateAuction(token, auction, [CAR_IDS[0]], BIDDING_PERIOD, manager);
         });
 
         it('all auctioned cars must belong to the same series', async function () {
-            // TODO
+            const createSeries = await token.createSeries(1, { from: manager });
+            const newCarIds = [CAR_IDS[CAR_IDS.length -1] + 1];
+            await token.createCars(newCarIds, createSeries.logs[0].args.seriesId, { from: manager });
+            await token.safeTransfersFrom(manager, auction.address, CAR_IDS.concat(newCarIds), { from: manager });
+            await assertRevert(auction.newAuction(CAR_IDS.concat(newCarIds), now + BIDDING_PERIOD, { from: manager }));
         });
 
         it('bidding end time must be in the future', async function () {
@@ -322,8 +447,8 @@ contract('CryptoCarzAuction', function (accounts) {
             const minAuctionPeriodSec = (await auction.MIN_AUCTION_PERIOD_SEC.call({ from: someoneElse })).toNumber();
             const maxAuctionPeriodSec = (await auction.MAX_AUCTION_PERIOD_SEC.call({ from: someoneElse })).toNumber();
             await token.safeTransfersFrom(manager, auction.address, CAR_IDS, { from: manager });
-            await assertRevert(auction.newAuction(CAR_IDS, now + minAuctionPeriodSec - 1, { from: manager }));
-            await assertRevert(auction.newAuction(CAR_IDS, now + maxAuctionPeriodSec + 1, { from: manager }));
+            await assertRevert(auction.newAuction(CAR_IDS, now + minAuctionPeriodSec - 3, { from: manager }));
+            await assertRevert(auction.newAuction(CAR_IDS, now + maxAuctionPeriodSec + 3, { from: manager }));
         });
 
         it('only manager can create a new auction', async function () {
@@ -337,18 +462,27 @@ contract('CryptoCarzAuction', function (accounts) {
         });
     });
 
-    describe('auction initialized', async function () {
-        // TODO: test create more series, not just one
 
+    describe('auction initialized', async function () {
         beforeEach(async function () {
             token = await assertedCreateTokenContract();
             auction = await assertedCreateAuctionContract(token.address);
+
+            // Create a few random car series to ensure we're not relying on seriesId 0.
+            for (let i = 0; i < getRandomInt(1, 5); i++) {
+                await assertedCreateCars(token, [CAR_IDS.length + 1 + i]);
+            }
             await assertedCreateCars(token, CAR_IDS);
             await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD, manager);
             now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
         });
 
         describe('extend auction', async function () {
+            it('cannot be earlier than current bidding end time', async function () {
+                await increaseTime(BIDDING_PERIOD - 10);
+                await assertRevert(auction.extendAuction(now - BIDDING_PERIOD - 11, { from: manager }));
+            });
+
             it('cannot extend longer than a maximum', async function () {
                 const maxAuctionPeriodSec = (await auction.MAX_AUCTION_PERIOD_SEC.call(
                     { from: someoneElse })).toNumber();
@@ -357,6 +491,11 @@ contract('CryptoCarzAuction', function (accounts) {
                 now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
                 await assertRevert(auction.extendAuction(now + maxAuctionPeriodSec + constants.DAY,
                     { from: manager }));
+            });
+
+            it('cannot extend after bidding end time', async function () {
+                await increaseTime(BIDDING_PERIOD + 1);
+                await assertRevert(auction.extendAuction(now + BIDDING_PERIOD + 10, { from: manager }));
             });
         });
 
@@ -386,7 +525,7 @@ contract('CryptoCarzAuction', function (accounts) {
             });
 
             it('cannot bid 0 ether', async function () {
-                // TODO
+                await assertRevert(auction.bid({ from: users[0], value: 0 }));
             });
 
             it('should be able to increase a bid', async function () {
@@ -404,6 +543,10 @@ contract('CryptoCarzAuction', function (accounts) {
                 await assertedCancelBid(auction, users[0]);
             });
 
+            it('cannot cancel bid if never bidded', async function () {
+                await assertRevert(auction.cancelBid({ from: users[0] }));
+            });
+
             it('cannot bid if auction was cancelled', async function () {
                 await assertedCancelAuction(auction);
                 await assertRevert(auction.bid({ from: users[0], value: 1 }));
@@ -411,28 +554,50 @@ contract('CryptoCarzAuction', function (accounts) {
         });
 
         describe('set car price', async function () {
-            it('only manager can set and validate the car price', async function () {
-                await assertedBid(auction, users[0], 1);
-                await increaseTime(BIDDING_PERIOD + 1);
-                await assertRevert(assertedSetCarPrice(auction, 1, owner));
-                await assertedSetCarPrice(auction, 1, manager);
-                await assertRevert(assertedValidateCarPrice(
-                    auction, owner, 1, CAR_IDS.length, 1, true));
-                assertedValidateCarPrice(auction, manager, 1, CAR_IDS.length, 1, true)
-            });
-
             it('cannot set car price before bidding end time', async function () {
                 await assertedBid(auction, users[0], 1);
-                // TODO: do an assertedSetCarPrice function
                 await assertRevert(auction.setCarPrice(1, { from: manager }));
+            });
+
+            it('cannot set car price if there are no bidders', async function () {
                 await increaseTime(BIDDING_PERIOD + 1);
-                await assertedSetCarPrice(auction, 1, manager);
+                await assertRevert(auction.setCarPrice(1, { from: manager }));
             });
 
             it('cannot set car price to 0', async function () {
                 await assertedBid(auction, users[0], 1);
                 await increaseTime(BIDDING_PERIOD + 1);
                 await assertRevert(auction.setCarPrice(0, { from: manager }));
+            });
+
+            it('cannot set same car price', async function () {
+                await assertedBid(auction, users[0], 1);
+                await increaseTime(BIDDING_PERIOD + 1);
+                await assertedSetCarPrice(auction, 1, manager);
+                await assertRevert(auction.setCarPrice(1, { from: manager }));
+            });
+
+            it('number of winners can be larger than number of auctioned cars', async function () {
+                for (let i = 0; i <= CAR_IDS.length; i++) {
+                    await assertedBid(auction, users[i], 2);
+                }
+                await increaseTime(BIDDING_PERIOD + 1);
+                await assertedSetCarPrice(auction, 1, manager);
+                await assertedValidateCarPrice(auction, manager, 1, CAR_IDS.length, CAR_IDS.length + 1, true);
+                await assertNumWinners(auction, CAR_IDS.length + 1,
+                    `Number of winners should be the number of auctioned cars plus 1`);
+            });
+
+            it('there can be no winners', async function () {
+                await assertedBid(auction, users[0], 1);
+                await increaseTime(BIDDING_PERIOD + 1);
+                await assertedSetCarPrice(auction, 2, manager);
+                await assertedValidateCarPrice(auction, manager, 2, CAR_IDS.length, 1, false);
+
+                const SAFETY_TIMEOUT_SEC = parseInt(await auction.SAFETY_TIMEOUT_SEC.call());
+                await increaseTime(SAFETY_TIMEOUT_SEC);
+                await assertNumWinners(auction, 0, `Number of winners should be zero`);
+                await assertedWithdrawBid(auction, users[0], 1);
             });
 
             it('cannot set car price if auction was cancelled', async function () {
@@ -442,221 +607,198 @@ contract('CryptoCarzAuction', function (accounts) {
                 await assertRevert(auction.setCarPrice(1, { from: manager }));
             });
 
-            describe('car price must enable to sell all possible auctioned cars', async function () {
-                it('when there are less bidders than cars', async function () {
-                    await assertedBid(auction, users[0], 10);
-                    await assertedBid(auction, users[1], 20);
-                    await increaseTime(BIDDING_PERIOD + 1);
-                    await assertedSetCarPrice(auction, 15, manager);
-                    await assertedValidateCarPrice(auction, manager, 15, CAR_IDS.length, 2, false)
-                    await assertedSetCarPrice(auction, 10, manager);
-                    await assertedValidateCarPrice(auction, manager, 10, CAR_IDS.length, 2, true);
-                });
-
-                it('when there are more bidders than cars', async function () {
-                    const carPrice = 10;
-                    for (let i = 0; i < CAR_IDS.length + 1; i++) {
-                        await assertedBid(auction, users[i], carPrice);
-                    }
-                    await increaseTime(BIDDING_PERIOD + 1);
-                    await assertedSetCarPrice(auction, carPrice, manager);
-                    await assertedValidateCarPrice(
-                        auction, manager, carPrice, CAR_IDS.length, CAR_IDS.length + 1, true);
-                });
-            });
-
-            it('can validate car price in more than 1 transaction', async function () {
-                const numBids = 10;
-                const numTransactions = 2;
-                const carPrice = 9;
-                //await auction.setMaxIter(numBids / numTransactions, { from: manager });
-                await auction.setMaxIter(5, { from: manager });
-                for (let i = 0; i < numBids; i++) {
-                    console.log(`${i} ${users[i]}`);
-                    await assertedBid(auction, users[i], i + 1);
-                }
+            it('cannot set car price if it is already validated', async function () {
+                await assertedBid(auction, users[0], 2);
                 await increaseTime(BIDDING_PERIOD + 1);
-                console.log(`setCarPrice`);
-                await auction.setCarPrice(carPrice, { from: manager });
-
-                console.log(`carPrice = ${(await auction.carPrice.call()).toNumber()}`);
-                console.log(`lastCheckedBidderIndex = ${(await auction.lastCheckedBidderIndex.call()).toNumber()}`);
-                console.log(`numWinnersCounted = ${(await auction.numWinnersCounted.call()).toNumber()}`);
-                console.log(`numCarsSold = ${(await auction.numCarsSold.call()).toNumber()}`);
-
-                console.log(`validateCarPrice`);
-                await auction.validateCarPrice({ from: manager });
-
-                console.log(`carPrice = ${(await auction.carPrice.call()).toNumber()}`);
-                console.log(`lastCheckedBidderIndex = ${(await auction.lastCheckedBidderIndex.call()).toNumber()}`);
-                console.log(`numWinnersCounted = ${(await auction.numWinnersCounted.call()).toNumber()}`);
-                console.log(`numCarsSold = ${(await auction.numCarsSold.call()).toNumber()}`);
-
-                console.log(`validateCarPrice`);
-                await auction.validateCarPrice({ from: manager });
-
-                console.log(`carPrice = ${(await auction.carPrice.call()).toNumber()}`);
-                console.log(`lastCheckedBidderIndex = ${(await auction.lastCheckedBidderIndex.call()).toNumber()}`);
-                console.log(`numWinnersCounted = ${(await auction.numWinnersCounted.call()).toNumber()}`);
-                console.log(`numCarsSold = ${(await auction.numCarsSold.call()).toNumber()}`);
-
+                await assertedSetCarPrice(auction, 1, manager);
+                await assertedValidateCarPrice(auction, manager, 1, CAR_IDS.length, 1, true);
+                await assertRevert(auction.setCarPrice(2, { from: manager }));
             });
+        });
 
-            it('can ammend the car price only with a different price', async function () {
-                await assertedBid(auction, users[0], 10);
+        describe('validate car price', async function () {
+            it('cannot validate if car price is 0', async function () {
                 await increaseTime(BIDDING_PERIOD + 1);
-                await assertedSetCarPrice(auction, 20, manager);
-                await assertRevert(assertedSetCarPrice(auction, 20, manager));
-                await assertedSetCarPrice(auction, 10, manager);
+                await assertRevert(auction.validateCarPrice({ from: manager }));
             });
 
-            it('cannot change the car price once validated', async function () {
-                await assertedBid(auction, users[0], 10);
+            it('cannot validate twice', async function () {
+                await assertedBid(auction, users[0], 2);
                 await increaseTime(BIDDING_PERIOD + 1);
-                await assertedSetCarPrice(auction, 10, manager);
-                await assertedValidateCarPrice(
-                    auction, manager, 10, CAR_IDS.length, 1, true);
-                await assertRevert(assertedSetCarPrice(auction, 20, manager));
+                await assertedSetCarPrice(auction, 1, manager);
+                await assertedValidateCarPrice(auction, manager, 1, CAR_IDS.length, 1, true);
+                await assertRevert(auction.validateCarPrice({ from: manager }));
             });
+
+            it('cannot set maximum iterations to 0', async function () {
+                await assertRevert(auction.setMaxIter(0, { from: manager }));
+            });
+
+            it('cannot set the same maximum iterations', async function () {
+                assert.equal((await auction.maxIter.call()).toNumber(), 500);
+                await assertRevert(auction.setMaxIter(500, { from: manager }));
+            });
+        });
+    });
+
+    describe('more winners than auctioned cars', async function () {
+        beforeEach(async function () {
+            await buildTestAuction();
+            await buildTestBids();
+            now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
         });
 
         describe('redeem car & withdraw bid', async function () {
             it('cannot redeem car if car price has not been validated yet', async function () {
-                const bidAmount = new BigNumber(3);
-                await assertedBid(auction, users[0], bidAmount);
                 await increaseTime(BIDDING_PERIOD + 1);
-                await assertRevert(auction.redeemCar({ from: users[0] }));
+                await assertRevert(auction.redeemCar({ from: winners[0] }));
             });
 
             it('cannot withdraw bid if car price has not been validated yet', async function () {
-                const bidAmount = new BigNumber(3);
-                await assertedBid(auction, users[0], bidAmount);
                 await increaseTime(BIDDING_PERIOD + 1);
-                await assertRevert(auction.withdrawBid({ from: users[0] }));
+                await assertRevert(auction.withdrawBid({ from: losers[0] }));
             });
 
-            it('only winners can redeem car and losers withdraw bids', async function () {
-                for (let i = 0; i < CAR_IDS.length + 1; i++) {
-                    await assertedBid(auction, users[i], i + 1);
+            // it('only winners can redeem car and losers withdraw bids', async function () {
+            //     await increaseTime(BIDDING_PERIOD + 1);
+            //     await assertedValidateCarPriceInMultipleTransactions(
+            //         auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, 2);
+            //     await assertRevert(auction.redeemCar({ from: losers[0] }));
+            //     await assertRevert(auction.withdrawBid({ from: winners[0] }));
+            //     await assertedRedeemCar(auction, token, winners[0], CAR_PRICE, bids[winners[0]]);
+            //     await assertedWithdrawBid(auction, losers[0], bids[losers[0]])
+            // });
+
+            it('number of winners should be as expected', async function () {
+                await increaseTime(BIDDING_PERIOD + 1);
+                await assertedSetCarPrice(auction, CAR_PRICE, manager);
+                await assertedValidateCarPriceInMultipleTransactions(
+                    auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
+                await assertNumWinners(auction, winners.length, 'incorrect number of winners');
+            });
+
+            it('only winners can redeem car and losers withdraw bids AND' +
+                'bidder cannot redeem or withdraw more than once AND' +
+                'remaining winners can withdraw their bid AND' +
+                'winnner cannot withdraw if already redeemed a car', async function () {
+                    await increaseTime(BIDDING_PERIOD + 1);
+                    await assertedSetCarPrice(auction, CAR_PRICE, manager);
+                    await assertedValidateCarPriceInMultipleTransactions(
+                        auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
+
+                    for (let i = 0; i < CAR_IDS.length; i++) { // winners with car
+                        await assertRevert(auction.withdrawBid({ from: winners[i] }));
+                        await assertedRedeemCar(auction, token, winners[i], CAR_PRICE, bids[winners[i]]);
+                        await assertRevert(auction.redeemCar({ from: winners[i] }));
+                        await assertRevert(auction.withdrawBid({ from: winners[i] }));
+                    }
+
+                    for (let i = CAR_IDS.length; i < winners.length; i++) { // winners without car
+                        await assertRevert(auction.redeemCar({ from: winners[i] }));
+                        await assertedWithdrawBid(auction, winners[i], bids[winners[i]]);
+                        await assertRevert(auction.withdrawBid({ from: winners[i] }));
+
+                    }
+
+                    for (let i = 0; i < losers.length; i++) { // losers
+                        await assertRevert(auction.redeemCar({ from: losers[i] }));
+                        await assertedWithdrawBid(auction, losers[i], bids[losers[i]]);
+                        await assertRevert(auction.withdrawBid({ from: losers[i] }));
+                    }
+                });
+
+            it('cannot claim more cars than the number of auctioned cars', async function () {
+                await increaseTime(BIDDING_PERIOD + 1);
+                await assertedSetCarPrice(auction, CAR_PRICE, manager);
+                await assertedValidateCarPriceInMultipleTransactions(
+                    auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
+
+                await assertNumWinners(auction, CAR_IDS.length + 1, `Number of winners should be the number of auctioned cars plus 1`);
+
+                for (let i = 0; i < CAR_IDS.length; i++) { // winners with car
+                    await assertedRedeemCar(auction, token, winners[i], CAR_PRICE, bids[winners[i]]);
                 }
-                await increaseTime(BIDDING_PERIOD + 1);
-                await assertedSetCarPrice(auction, 2, manager);
-                await assertedValidateCarPrice(
-                    auction, manager, 2, CAR_IDS.length, CAR_IDS.length + 1, true);
-                await assertRevert(auction.redeemCar({ from: users[0] }));
-                await assertRevert(auction.withdrawBid({ from: users[1] }));
-                await assertedRedeemCar(auction, token, users[1], 2, 2);
-                await assertedWithdrawBid(auction, users[0], 1);
+
+                let numCarsTransferred = (await auction.numCarsTransferred.call()).toNumber();
+                assert.equal(numCarsTransferred, CAR_IDS.length,
+                    `Number of cars transferred should be the number of auctioned cars`);
+
+                await assertRevert(auction.redeemCar({ from: winners[CAR_IDS.length] }));
             });
-
-            describe('more winners than auctioned cars', async function () {
-                // TODO
-                describe('cars are sold out', async function () {
-                    it('remaining winners can withdraw their bids', async function () {
-                    });
-
-                    it('winner cannot withdraw if already redeemed a car', async function () {
-                    });
-                });
-            });
-
-            describe('less bidders than auctioned cars', async function () {
-                // TODO
-            });
-
-            it('bidder cannot be redeem or withdraw more than once', async function () {
-                const carPrice = new BigNumber(1);
-                const bidAmount = new BigNumber(3);
-                await assertedBid(auction, users[0], bidAmount);
-                await increaseTime(BIDDING_PERIOD + 1);
-                await auction.setCarPrice(carPrice, { from: manager });
-                await auction.validateCarPrice({ from: manager });
-                await assertedRedeemCar(auction, token, users[0], carPrice, bidAmount);
-                await assertRevert(auction.redeemCar({ from: users[0] }));
-                // TODO: withdraw bid
-            });
-
-            it('cannot claim more cars than the number of auctioned cars',
-                async function () {
-
-                    // TODO
-
-                    // const carPrice = new BigNumber(1);
-                    // const bidAmount = new BigNumber(2);
-                    // for (let i = 0; i <= CAR_IDS.length; i++) {
-                    //     await assertedBid(auction, users[i], bidAmount);
-                    // }
-                    // await increaseTime(BIDDING_PERIOD + 1);
-                    // await auction.setCarPrice(carPrice, { from: manager });
-                    // let numWinners = (await auction.numWinners.call()).toNumber();
-
-                    // assert.equal(numWinners, CAR_IDS.length + 1,
-                    //     `Number of winners should be the number of auctioned cars plus 1`);
-
-                    // for (let i = 0; i < CAR_IDS.length; i++) {
-                    //     await assertedRedeemCar(auction, token, users[i], carPrice, bidAmount);
-                    // }
-
-                    // numWinners = (await auction.numWinners.call()).toNumber();
-                    // let numCarsTransferred = (await auction.numCarsTransferred.call()).toNumber();
-
-                    // // TODO: check numWinners and numCarsTransferred and CAR_IDS.length
-
-                    // await assertRevert(auction.redeemCar({ from: users[CAR_IDS.length] }));
-
-                });
-
         });
 
         describe('withdraw', async function () {
-            const carPrice = new BigNumber(3);
-            const bidAmounts = [
-                new BigNumber(2),
-                new BigNumber(3),
-                new BigNumber(3),
-                new BigNumber(3),
-                new BigNumber(3),
-                new BigNumber(10)];
-
-            beforeEach(async function () {
-                for (let i = 0; i < bidAmounts.length; i++) {
-                    await assertedBid(auction, users[i], bidAmounts[i]);
-                }
-            });
-
             it('cannot do it before bidding end time', async function () {
-                await assertRevert(assertedWithdraw(auction, carPrice, 4, manager));
+                await assertRevert(auction.withdraw({ from: manager }));
             });
 
             it('cannot do it if car price has not been set', async function () {
                 await increaseTime(BIDDING_PERIOD + 1);
-                await assertRevert(assertedWithdraw(auction, carPrice, 4, manager));
+                await assertRevert(auction.withdraw({ from: manager }));
             });
 
-            describe('ready to withdraw', async function () {
-                beforeEach(async function () {
-                    await increaseTime(BIDDING_PERIOD + 1);
-                    await auction.setCarPrice(carPrice, { from: manager });
-                    await auction.validateCarPrice({ from: manager });
-                });
+            it('cannot do it if auction is not initialized', async function () {
+                auction = await assertedCreateAuctionContract(token.address);
+                await assertRevert(auction.withdraw({ from: manager }));
+            });
 
-                it('only manager can do it', async function () {
-                    await assertRevert(assertedWithdraw(
-                        auction, carPrice, 0, owner));
-                    await assertedWithdraw(auction, carPrice.times(5), 0, manager);
-                });
+            it('only manager can do it', async function () {
+                await increaseTime(BIDDING_PERIOD + 1);
+                await assertedSetCarPrice(auction, CAR_PRICE, manager);
+                await assertedValidateCarPriceInMultipleTransactions(
+                    auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
+                await assertRevert(auction.withdraw({ from: owner }));
+                await assertedWithdraw(auction, CAR_PRICE * CAR_IDS.length, 0, manager);
+            });
+
+            it('cannot withdraw more than once', async function () {
+                await increaseTime(BIDDING_PERIOD + 1);
+                await assertedSetCarPrice(auction, CAR_PRICE, manager);
+                await assertedValidateCarPriceInMultipleTransactions(
+                    auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
+                await assertedWithdraw(auction, CAR_PRICE * CAR_IDS.length, 0, manager);
+                await assertRevert(auction.withdraw({ from: manager }));
             });
         });
+    });
 
-        describe('destroy', async function () {
-            it('contract must not own ether nor cars before destroying it', async function () {
-                await assertedBid(auction, users[0], 1);
-                await assertRevert(auction.destroy({ from: owner }));
-                await assertedCancelBid(auction, users[0]);
-                await assertRevert(auction.destroy({ from: owner }));
-                await assertedCancelAuction(auction);
-                await auction.destroy({ from: owner });
-            });
+    describe('less winners than auctioned cars', async function () {
+        const numBidders = CAR_IDS.length - 1;
+
+        before(async function () {
+            await buildTestAuction();
+            assert.isBelow(numBidders, CAR_IDS.length);
+        });
+
+        it('all bidders can redeem a car and test withdraw', async function () {
+            for (let i = 0; i < numBidders; i++) {
+                await assertedBid(auction, users[i], CAR_PRICE + 1);
+            }
+            await increaseTime(BIDDING_PERIOD + 1);
+            await assertedSetCarPrice(auction, CAR_PRICE, manager);
+            await assertedValidateCarPriceInMultipleTransactions(auction, manager, CAR_PRICE, CAR_IDS.length, numBidders, 2);
+            for (let i = 0; i < numBidders; i++) {
+                await assertedRedeemCar(auction, token, users[i], CAR_PRICE, CAR_PRICE + 1);
+            }
+        });
+
+        it('withdraw', async function () {
+            await assertedWithdraw(auction, CAR_PRICE * numBidders, 1, manager);
+        });
+    });
+
+    describe('destroy', async function () {
+        beforeEach(async function () {
+            await buildTestAuction();
+        });
+
+        it('contract must not own ether nor cars before destroying it', async function () {
+            await assertedBid(auction, users[0], 1);
+            await assertRevert(auction.destroy({ from: owner }));
+            await assertedCancelBid(auction, users[0]);
+            await assertRevert(auction.destroy({ from: owner }));
+            await assertedCancelAuction(auction);
+            await auction.destroy({ from: owner });
         });
     });
 

@@ -127,6 +127,20 @@ contract('CryptoCarzControl', function (accounts) {
             await checkPause(controlContract, pause);
             await assertRevert(controlContract.unpause({ from: manager }));
         });
+
+        it('can only unpause if paused', async function () {
+            await assertRevert(controlContract.unpause({ from: owner }));
+            const pause = await controlContract.pause({ from: owner });
+            await checkPause(controlContract, pause);
+            const unpause = await controlContract.unpause({ from: owner });
+            await checkUnpause(controlContract, unpause);
+        });
+
+        it('cannot unpause if upgraded', async function () {
+            const upgrade = await controlContract.upgrade(someoneElse, { from: owner });
+            await checkUpgrade(controlContract, upgrade, someoneElse);
+            await assertRevert(controlContract.unpause({ from: owner }));
+        });
     });
 
     describe('upgrade', async function () {
@@ -136,12 +150,12 @@ contract('CryptoCarzControl', function (accounts) {
 
         it('cannot upgrade if paused', async function () {
             await controlContract.pause({ from: owner });
-            assertRevert(controlContract.upgrade(someoneElse, { from: manager }));
+            assertRevert(controlContract.upgrade(someoneElse, { from: owner }));
             await controlContract.unpause({ from: owner });
         });
 
         it('cannot upgrade to address 0x0', async function () {
-            assertRevert(controlContract.upgrade(constants.ZERO_ADDRESS, { from: manager }));
+            assertRevert(controlContract.upgrade(constants.ZERO_ADDRESS, { from: owner }));
         });
 
         it('owner can upgrade, new contract address should be set and contract paused', async function () {
