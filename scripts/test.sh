@@ -65,7 +65,6 @@ else
 
   $truffle compile
 
-  #$truffle test test/CryptoCarzToken.basic.test.js
   $truffle test test/CryptoCarzControl.test.js
   $truffle test test/CryptoCarzToken.test.js
   $truffle test test/CryptoCarzAuction.test.js
