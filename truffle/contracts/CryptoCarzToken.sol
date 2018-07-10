@@ -1,7 +1,6 @@
 pragma solidity 0.4.24;
 
 import "../../node_modules/openzeppelin-solidity/contracts/token/ERC721/ERC721Token.sol";
-import "../../node_modules/openzeppelin-solidity/contracts/token/ERC721/ERC721Receiver.sol";
 import "./CryptoCarzControl.sol";
 import "./CryptoCarzAuction.sol";
 
@@ -54,16 +53,6 @@ contract CryptoCarzToken is ERC721Token, CryptoCarzControl {
         CryptoCarzControl(_owner, _manager)
         ERC721Token("CryptoCarz", "CARZ") public checkTreasurer(_treasurer) {
         treasurer = _treasurer;
-    }
-
-    /// @dev Implementation of ERC721Receiver interface as per EIP-721 specifications:
-    ///       https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
-    /// @param _from The sending address.
-    /// @param _tokenId The NFT identifier which is being transfered.
-    /// @param _data Additional data with no specified format.
-    /// @return `bytes4(keccak256("onERC721Received(address,uint256,bytes)"))`
-    function onERC721Received(address _from, uint256 _tokenId, bytes _data) public returns(bytes4) {
-        return ERC721_RECEIVED;
     }
 
     /// @dev Treasurer account setter. Only the owner can change the treasurer.
