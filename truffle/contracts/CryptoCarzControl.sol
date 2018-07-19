@@ -126,6 +126,7 @@ contract CryptoCarzControl {
     /// @param _newContractAddress The new smart contract version address.
     function upgrade(address _newContractAddress) external onlyOwner ifNotPaused {
         require(_newContractAddress != address(0));
+        require(_newContractAddress != address(this));
         newContractAddress = _newContractAddress;
         emit ContractUpgrade(newContractAddress);
         paused = true;

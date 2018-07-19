@@ -122,7 +122,7 @@ contract('CryptoCarzControl', function (accounts) {
             await checkUnpause(controlContract, unpause);
         });
 
-        it('owner can pause but cannot unpause', async function () {
+        it('manager can pause but cannot unpause', async function () {
             const pause = await controlContract.pause({ from: manager });
             await checkPause(controlContract, pause);
             await assertRevert(controlContract.unpause({ from: manager }));
@@ -130,7 +130,7 @@ contract('CryptoCarzControl', function (accounts) {
 
         it('can only unpause if paused', async function () {
             await assertRevert(controlContract.unpause({ from: owner }));
-            const pause = await controlContract.pause({ from: owner });
+            const pause = await controlContract.pause({ from: manager });
             await checkPause(controlContract, pause);
             const unpause = await controlContract.unpause({ from: owner });
             await checkUnpause(controlContract, unpause);
@@ -146,6 +146,7 @@ contract('CryptoCarzControl', function (accounts) {
     describe('upgrade', async function () {
         it('non-owner accounts cannot upgrade', async function () {
             await assertRevert(controlContract.upgrade(someoneElse, { from: manager }));
+            await assertRevert(controlContract.upgrade(someoneElse, { from: someoneElse }));
         });
 
         it('cannot upgrade if paused', async function () {

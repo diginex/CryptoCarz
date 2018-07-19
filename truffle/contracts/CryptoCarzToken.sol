@@ -31,6 +31,7 @@ contract CryptoCarzToken is ERC721Token, CryptoCarzControl {
     event CreateCars(uint256[] tokenIds, uint256 indexed seriesId);
     event CreateAuction(address contractAddress);
     event SetTreasurer(address indexed previousTreasurer, address indexed newTreasurer);
+    event SafeTransfersFrom(address indexed from, address indexed to, uint256[] tokenIds);
 
     /// @dev Overrides ERC721Token's `canTransfer` modifier to check if contract is paused.
     /// @param _tokenId ID of the token to validate
@@ -117,6 +118,8 @@ contract CryptoCarzToken is ERC721Token, CryptoCarzControl {
         for (uint256 i = 0; i < _tokenIds.length; i++) {
             safeTransferFrom(_from, _to, _tokenIds[i]);
         }
+
+        emit SafeTransfersFrom(_from, _to, _tokenIds);
     }
 
     /// @dev Factory function that allows the verified creation of CryptoCarzAuction contracts,

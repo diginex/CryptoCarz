@@ -1,5 +1,6 @@
 "use strict";
 
+const BigNumber = web3.BigNumber;
 const CryptoCarzAuction = artifacts.require('./CryptoCarzAuction.sol');
 const CryptoCarzToken = artifacts.require("./CryptoCarzToken.sol");
 import assertRevert from './assertRevert';
@@ -56,6 +57,15 @@ contract('CryptoCarzToken', function (accounts) {
         }
     }
 
+    async function assertedCreateAuction(account) {
+        const createAuction = await token.createAuction({ from: account });
+        assert.equal(createAuction.logs[0].event, 'CreateAuction');
+        const auction = CryptoCarzAuction.at(createAuction.logs[0].args.contractAddress.valueOf());
+        const initialized = await auction.initialized.call();
+        assert.isBoolean(initialized);
+        assert.isFalse(initialized);
+    }
+
     async function assertedTransferFrom(token, from, to, tokenId, account) {
         const fromBalance = (await token.balanceOf(from)).toNumber();
         const toBalance = (await token.balanceOf(to)).toNumber();
@@ -80,10 +90,24 @@ contract('CryptoCarzToken', function (accounts) {
         const fromBalance = (await token.balanceOf(from)).toNumber();
         const toBalance = (await token.balanceOf(to)).toNumber();
         await checkTokensOwnedBy(token, tokenIds, from);
-        await token.safeTransfersFrom(from, to, tokenIds, { from: account });
+        const safeTransfersFrom = await token.safeTransfersFrom(from, to, tokenIds, { from: account });
+        const lastIndex = safeTransfersFrom.logs.length - 1;
+        assert.equal(safeTransfersFrom.logs[lastIndex].event, 'SafeTransfersFrom');
+        assert.equal(safeTransfersFrom.logs[lastIndex].args.from.valueOf(), from);
+        assert.equal(safeTransfersFrom.logs[lastIndex].args.to.valueOf(), to);
+        assert.equal(`${safeTransfersFrom.logs[lastIndex].args.tokenIds.valueOf()}`, `${tokenIds}`);
         await checkTokensOwnedBy(token, tokenIds, to);
         assert.equal(await token.balanceOf(from), fromBalance - tokenIds.length);
         assert.equal(await token.balanceOf(to), toBalance + tokenIds.length);
+    }
+
+    async function assertedUpgrade(token, newTokenAddress, account) {
+        const upgrade = await token.upgrade(newTokenAddress, { from: account });
+        assert.equal(await token.newContractAddress.call(), newTokenAddress);
+        assert.equal(upgrade.logs[0].event, 'ContractUpgrade');
+        assert.equal(upgrade.logs[0].args.newContractAddress.valueOf(), newTokenAddress);
+        assert.isTrue(await token.paused.call());
+        assert.equal(upgrade.logs[1].event, 'Pause');
     }
 
     beforeEach(async function () {
@@ -157,6 +181,9 @@ contract('CryptoCarzToken', function (accounts) {
             const carIds = [0, 1, 2];
             const seriesId = 0;
             await assertRevert(token.createCars(carIds, seriesId, { from: owner }));
+            await assertRevert(token.createCars(carIds, seriesId, { from: someoneElse }));
+            let createCars = await token.createCars(carIds, seriesId, { from: manager });
+            await checkCreateCars(token, createCars, carIds, seriesId, manager);
         });
 
         it('cannot create new cars when paused', async function () {
@@ -175,6 +202,18 @@ contract('CryptoCarzToken', function (accounts) {
 
             createCars = await token.createCars(carIds, seriesId, { from: manager });
             await checkCreateCars(token, createCars, carIds, seriesId, manager);
+        });
+
+        it('can add cars to a series',
+        async function () {
+            let carIds = [0, 1, 2];
+            const seriesId = 0;
+
+            let createCars = await token.createCars(carIds, seriesId, { from: manager });
+            await checkCreateCars(token, createCars, carIds, seriesId, manager);
+
+            carIds = [3, 4];
+            await assertRevert(token.createCars(carIds, seriesId, { from: manager }));
         });
 
         it('cannot create more cars within a series than the series max number of cars',
@@ -202,7 +241,8 @@ contract('CryptoCarzToken', function (accounts) {
 
     describe('series', async function () {
         it('create series', async function () {
-            await assertRevert(token.createSeries(0, { from: manager }));
+            let createSeries = await token.createSeries(1, { from: manager });
+            checkCreateSeries(token, createSeries, 1, 1);
         });
 
         it('cannot create a series of max 0 tokens', async function () {
@@ -252,16 +292,74 @@ contract('CryptoCarzToken', function (accounts) {
 
     describe('auction', async function () {
         it('can create auctions', async function () {
-            const createAuction = await token.createAuction({ from: manager });
-            assert.equal(createAuction.logs[0].event, 'CreateAuction');
-            const auction = CryptoCarzAuction.at(createAuction.logs[0].args.contractAddress.valueOf());
-            const initialized = await auction.initialized.call();
-            assert.isBoolean(initialized);
-            assert.isFalse(initialized);
+            await assertedCreateAuction(manager);
         });
     });
 
     describe('upgrade', async function () {
-        // TODO
+        let newTokenAddress;
+
+        beforeEach(async function () {
+            newTokenAddress = (await CryptoCarzToken.new(owner, manager, treasurer, { from: someoneElse })).address;
+        });
+
+        it('can upgrade', async function () {
+            await assertedUpgrade(token, newTokenAddress, owner);
+        });
+
+        it('can only be done by owner', async function () {
+            await assertRevert(token.upgrade(newTokenAddress, { from: manager }));
+            await token.upgrade(newTokenAddress, { from: owner });
+        });
+
+        it('cannot upgrade to 0x0', async function () {
+            await assertRevert(token.upgrade(constants.ZERO_ADDRESS, { from: owner }));
+        });
+
+        it('cannot upgrade to itself', async function () {
+            await assertRevert(token.upgrade(token.address, { from: owner }));
+        });
+
+        it('can still call view functions', async function () {
+            const seriesId = 0;
+            const carIds = [0, 1, 2, 3];
+            const createCars = await token.createCars(carIds, seriesId, { from: manager });
+            await checkCreateCars(token, createCars, carIds, seriesId, manager);
+            await assertedSafeTransfersFrom(token, manager, users[0], [0, 1], manager);
+            await assertedSafeTransfersFrom(token, manager, users[1], [2, 3], manager);
+            await token.approve(users[1], 0, { from: users[0] });
+            await token.approve(users[0], 2, { from: users[1] });
+
+            await assertedUpgrade(token, newTokenAddress, owner);
+
+            // This should give us enough information to build a newToken.mintFromOldToken(address).
+            assert.deepEqual(await Promise.all(carIds.map(carId => token.getCarSeries(carId))),
+                carIds.map(_ => new BigNumber(seriesId)), 'wrong car series');
+            assert.equal(await token.balanceOf(users[0]), 2, 'wrong token balance');
+            assert.equal(await token.balanceOf(users[1]), 2, 'wrong token balance');
+            assert.equal(await token.tokenOfOwnerByIndex(users[0], 0), 0, 'wrong owned token ID');
+            assert.equal(await token.tokenOfOwnerByIndex(users[0], 1), 1, 'wrong owned token ID');
+            assert.equal(await token.tokenOfOwnerByIndex(users[1], 0), 2, 'wrong owned token ID');
+            assert.equal(await token.tokenOfOwnerByIndex(users[1], 1), 3, 'wrong owned token ID');
+            assert.equal(await token.getApproved(0), users[1], 'wrong approved address');
+            assert.equal(await token.getApproved(2), users[0], 'wrong approved address');
+            // For setApprovalForAll(), we would probably just replay all ApprovalForAll events.
+        });
+
+        it('cannot call ifNotPaused functions', async function () {
+            const seriesId = 0;
+            const carIds = [0, 1, 2, 3];
+            const createCars = await token.createCars(carIds, seriesId, { from: manager });
+            await checkCreateCars(token, createCars, carIds, seriesId, manager);
+            await assertedSafeTransfersFrom(token, manager, users[0], [0, 1, 2, 3], manager);
+            await assertedCreateAuction(manager);
+
+            token = await CryptoCarzToken.new(owner, manager, treasurer, { from: someoneElse });
+            await assertedUpgrade(token, newTokenAddress, owner);
+            await assertRevert(token.createSeries(4, { from: manager }));
+            await assertRevert(token.createCars(carIds, seriesId, { from: manager }));
+            await assertRevert(token.safeTransfersFrom(manager, users[0], [0, 1, 2, 3], { from: manager }));
+            await assertRevert(token.createAuction({ from: manager }));
+        });
     });
 });

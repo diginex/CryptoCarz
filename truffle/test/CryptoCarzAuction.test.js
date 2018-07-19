@@ -1,9 +1,10 @@
 "use strict";
 
 const CryptoCarzAuction = artifacts.require('./CryptoCarzAuction.sol');
+const CryptoCarzAuctionMock = artifacts.require('./CryptoCarzAuctionMock.sol');
 const CryptoCarzToken = artifacts.require('./CryptoCarzToken.sol');
 import assertRevert from './assertRevert';
-import increaseTime from './increaseTime';
+import increaseBlocks from './increaseBlocks';
 import constants from './constants';
 const seedrandom = require('seedrandom');
 const BigNumber = web3.BigNumber;
@@ -28,7 +29,11 @@ contract('CryptoCarzAuction', function (accounts) {
 
     const CAR_IDS = [1, 2, 3, 4, 5];
     const CAR_PRICE = 100;
-    const BIDDING_PERIOD = 1 * constants.WEEK;
+
+    // Generic bidding period, enough to run most tests before hitting SAFETY_TIMEOUT_BLOCKS.
+    // If you're going to make actual bids, increment this by the number of bids you'll make as they
+    // will be mined instantly.
+    const BIDDING_PERIOD = 2 * constants.MINUTE / constants.AVERAGE_BLOCK_TIME;
 
     // Number of transactions needed for `validateCarPrice()` to complete the
     // car price validation
@@ -52,7 +57,6 @@ contract('CryptoCarzAuction', function (accounts) {
 
     let token;
     let auction;
-    let now;
     let bids, losers, winners, bidders;
     let expectedSeriesId;
 
@@ -108,6 +112,13 @@ contract('CryptoCarzAuction', function (accounts) {
         assertSimilarBalance(balanceAfter, expectedBalanceAfter);
         //expectedBalanceAfter.should.be.bignumber.equal(balanceAfter, `wrong expectedBalanceAfter for bidder ${bidder}`);
         '0'.should.be.bignumber.equal(bidderAmountAfter, `wrong bidderAmountAfter for bidder ${bidder}`);
+    }
+
+    async function assertedExtendAuction(newBiddingEndBlockNumber, account) {
+        const extendAuction = await auction.extendAuction(newBiddingEndBlockNumber, { from: account });
+        assert.equal(extendAuction.logs[0].event, 'AuctionExtended');
+        assert.equal(extendAuction.logs[0].args.biddingEndBlockNumber.valueOf(), newBiddingEndBlockNumber);
+        assert.equal((await auction.biddingEndBlockNumber.call()).toNumber(), newBiddingEndBlockNumber);
     }
 
     async function assertedRedeemCar(auction, token, redeemer, carPrice, bidAmount) {
@@ -172,7 +183,9 @@ contract('CryptoCarzAuction', function (accounts) {
         assert.equal(carsOwned, numCars,
             `not all tokens are owned by auction contract`);
 
+        assert.isFalse(await auction.withdrawn.call());
         const withdraw = await auction.withdraw({ from: account });
+        assert.isTrue(await auction.withdrawn.call());
 
         assert.equal(withdraw.logs[0].event, 'ManagerWithdrawEther');
         assert.equal(withdraw.logs[0].args.etherTo.valueOf(), treasurer);
@@ -194,12 +207,22 @@ contract('CryptoCarzAuction', function (accounts) {
 
     async function assertedCreateTokenContract() {
         token = await CryptoCarzToken.new(owner, manager, treasurer, { from: someoneElse });
+        assert.equal(await token.owner.call(), owner);
+        assert.equal(await token.manager.call(), manager);
+        assert.equal(await token.treasurer.call(), treasurer);
         expectedSeriesId = 0;
         return token
     }
 
     async function assertedCreateAuctionContract(tokenContractAddress) {
-        return await CryptoCarzAuction.new(owner, manager, tokenContractAddress, { from: someoneElse });
+        auction = await CryptoCarzAuction.new(owner, manager, tokenContractAddress, { from: someoneElse });
+        assert.equal(await auction.owner.call(), owner);
+        assert.equal(await auction.manager.call(), manager);
+        assert.equal(await auction.token.call(), tokenContractAddress);
+        assert.equal((await auction.maxIter.call()).toNumber(), (await auction.DEFAULT_MAX_ITER.call()).toNumber());
+        assert.isFalse(await auction.initialized.call());
+        assert.isFalse(await auction.cancelled.call());
+        return auction;
     }
 
     async function assertedCreateCars(token, carIds) {
@@ -215,13 +238,8 @@ contract('CryptoCarzAuction', function (accounts) {
         if (carIds.length > 0) {
             await token.safeTransfersFrom(manager, auction.address, carIds, { from: manager });
         }
-        const now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
-        const biddingEndTime = now + biddingPeriod;
-        // console.log(`now = ${now}`);
-        // console.log(`biddingPeriod = ${biddingPeriod}`);
-        // console.log(`biddingEndTime = ${biddingEndTime}`);
-        // console.log(`carIds = ${carIds}`);
-        await auction.newAuction(carIds, biddingEndTime, { from: account });
+        const biddingEndBlockNumber = web3.eth.blockNumber + biddingPeriod;
+        await auction.newAuction(carIds, biddingEndBlockNumber, { from: account });
         return auction;
     }
 
@@ -329,7 +347,7 @@ contract('CryptoCarzAuction', function (accounts) {
         return Math.floor(Math.random() * (max - min + 1)) + min;
     }
 
-    async function buildTestAuction() {
+    async function buildTestAuction(biddingPeriod) {
         token = await assertedCreateTokenContract();
         auction = await assertedCreateAuctionContract(token.address);
 
@@ -338,7 +356,7 @@ contract('CryptoCarzAuction', function (accounts) {
             await assertedCreateCars(token, [CAR_IDS.length + 1 + i]);
         }
         await assertedCreateCars(token, CAR_IDS);
-        await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD, manager);
+        await assertedCreateAuction(token, auction, CAR_IDS, biddingPeriod, manager);
     }
 
     async function buildTestBids() {
@@ -418,12 +436,11 @@ contract('CryptoCarzAuction', function (accounts) {
             token = await assertedCreateTokenContract();
             auction = await assertedCreateAuctionContract(token.address);
             await assertedCreateCars(token, CAR_IDS);
-            now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
         });
 
         it('contract can only be initialized once', async function () {
             await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD, manager);
-            await assertRevert(auction.newAuction(CAR_IDS, now + BIDDING_PERIOD, { from: manager }));
+            await assertRevert(auction.newAuction(CAR_IDS, web3.eth.blockNumber + BIDDING_PERIOD, { from: manager }));
         });
 
         it('at least 1 car must be auctioned', async function () {
@@ -436,7 +453,7 @@ contract('CryptoCarzAuction', function (accounts) {
             const newCarIds = [CAR_IDS[CAR_IDS.length -1] + 1];
             await token.createCars(newCarIds, createSeries.logs[0].args.seriesId, { from: manager });
             await token.safeTransfersFrom(manager, auction.address, CAR_IDS.concat(newCarIds), { from: manager });
-            await assertRevert(auction.newAuction(CAR_IDS.concat(newCarIds), now + BIDDING_PERIOD, { from: manager }));
+            await assertRevert(auction.newAuction(CAR_IDS.concat(newCarIds), web3.eth.blockNumber + BIDDING_PERIOD, { from: manager }));
         });
 
         it('bidding end time must be in the future', async function () {
@@ -444,11 +461,12 @@ contract('CryptoCarzAuction', function (accounts) {
         });
 
         it('auction cannot be too short or too long', async function () {
-            const minAuctionPeriodSec = (await auction.MIN_AUCTION_PERIOD_SEC.call({ from: someoneElse })).toNumber();
-            const maxAuctionPeriodSec = (await auction.MAX_AUCTION_PERIOD_SEC.call({ from: someoneElse })).toNumber();
+            const minAuctionPeriodBlocks = (await auction.MIN_AUCTION_PERIOD_BLOCKS.call({ from: someoneElse })).toNumber();
+            const maxAuctionPeriodBlocks = (await auction.MAX_AUCTION_PERIOD_BLOCKS.call({ from: someoneElse })).toNumber();
             await token.safeTransfersFrom(manager, auction.address, CAR_IDS, { from: manager });
-            await assertRevert(auction.newAuction(CAR_IDS, now + minAuctionPeriodSec - 3, { from: manager }));
-            await assertRevert(auction.newAuction(CAR_IDS, now + maxAuctionPeriodSec + 3, { from: manager }));
+            await assertRevert(auction.newAuction(CAR_IDS, web3.eth.blockNumber + minAuctionPeriodBlocks - 1, { from: manager }));
+            // This needs to be + 2 as by the time the function reaches block.number, it will have incremented by 1.
+            await assertRevert(auction.newAuction(CAR_IDS, web3.eth.blockNumber + maxAuctionPeriodBlocks + 2, { from: manager }));
         });
 
         it('only manager can create a new auction', async function () {
@@ -456,9 +474,9 @@ contract('CryptoCarzAuction', function (accounts) {
         });
 
         it('car tokens need to belong to auction contract to start the auction', async function () {
-            await assertRevert(auction.newAuction(CAR_IDS, now + BIDDING_PERIOD, { from: manager }));
+            await assertRevert(auction.newAuction(CAR_IDS, web3.eth.blockNumber + BIDDING_PERIOD, { from: manager }));
             await token.safeTransfersFrom(manager, auction.address, CAR_IDS, { from: manager });
-            await auction.newAuction(CAR_IDS, now + BIDDING_PERIOD, { from: manager });
+            await auction.newAuction(CAR_IDS, web3.eth.blockNumber + BIDDING_PERIOD, { from: manager });
         });
     });
 
@@ -474,28 +492,30 @@ contract('CryptoCarzAuction', function (accounts) {
             }
             await assertedCreateCars(token, CAR_IDS);
             await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD, manager);
-            now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
         });
 
         describe('extend auction', async function () {
+            it('can extend bidding end time', async function () {
+                await assertedExtendAuction(web3.eth.blockNumber + 10, manager);
+            });
+
             it('cannot be earlier than current bidding end time', async function () {
-                await increaseTime(BIDDING_PERIOD - 10);
-                await assertRevert(auction.extendAuction(now - BIDDING_PERIOD - 11, { from: manager }));
+                await increaseBlocks(BIDDING_PERIOD - 10);
+                await assertRevert(auction.extendAuction(web3.eth.blockNumber - BIDDING_PERIOD - 11, { from: manager }));
             });
 
             it('cannot extend longer than a maximum', async function () {
-                const maxAuctionPeriodSec = (await auction.MAX_AUCTION_PERIOD_SEC.call(
+                const maxAuctionPeriodBlocks = (await auction.MAX_AUCTION_PERIOD_BLOCKS.call(
                     { from: someoneElse })).toNumber();
-                now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
-                await auction.extendAuction(now + maxAuctionPeriodSec, { from: manager });
-                now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
-                await assertRevert(auction.extendAuction(now + maxAuctionPeriodSec + constants.DAY,
+                await assertedExtendAuction(web3.eth.blockNumber + maxAuctionPeriodBlocks, manager);
+                // This needs to be + 2 as by the time the function reaches block.number, it will have incremented by 1.
+                await assertRevert(auction.extendAuction(web3.eth.blockNumber + maxAuctionPeriodBlocks + 2,
                     { from: manager }));
             });
 
             it('cannot extend after bidding end time', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
-                await assertRevert(auction.extendAuction(now + BIDDING_PERIOD + 10, { from: manager }));
+                await increaseBlocks(BIDDING_PERIOD + 1);
+                await assertRevert(auction.extendAuction(web3.eth.blockNumber + 1, { from: manager }));
             });
         });
 
@@ -560,19 +580,19 @@ contract('CryptoCarzAuction', function (accounts) {
             });
 
             it('cannot set car price if there are no bidders', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertRevert(auction.setCarPrice(1, { from: manager }));
             });
 
             it('cannot set car price to 0', async function () {
                 await assertedBid(auction, users[0], 1);
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertRevert(auction.setCarPrice(0, { from: manager }));
             });
 
             it('cannot set same car price', async function () {
                 await assertedBid(auction, users[0], 1);
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertedSetCarPrice(auction, 1, manager);
                 await assertRevert(auction.setCarPrice(1, { from: manager }));
             });
@@ -581,35 +601,23 @@ contract('CryptoCarzAuction', function (accounts) {
                 for (let i = 0; i <= CAR_IDS.length; i++) {
                     await assertedBid(auction, users[i], 2);
                 }
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertedSetCarPrice(auction, 1, manager);
                 await assertedValidateCarPrice(auction, manager, 1, CAR_IDS.length, CAR_IDS.length + 1, true);
                 await assertNumWinners(auction, CAR_IDS.length + 1,
                     `Number of winners should be the number of auctioned cars plus 1`);
             });
 
-            it('there can be no winners', async function () {
-                await assertedBid(auction, users[0], 1);
-                await increaseTime(BIDDING_PERIOD + 1);
-                await assertedSetCarPrice(auction, 2, manager);
-                await assertedValidateCarPrice(auction, manager, 2, CAR_IDS.length, 1, false);
-
-                const SAFETY_TIMEOUT_SEC = parseInt(await auction.SAFETY_TIMEOUT_SEC.call());
-                await increaseTime(SAFETY_TIMEOUT_SEC);
-                await assertNumWinners(auction, 0, `Number of winners should be zero`);
-                await assertedWithdrawBid(auction, users[0], 1);
-            });
-
             it('cannot set car price if auction was cancelled', async function () {
                 await assertedBid(auction, users[0], 1);
                 await assertedCancelAuction(auction);
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertRevert(auction.setCarPrice(1, { from: manager }));
             });
 
             it('cannot set car price if it is already validated', async function () {
                 await assertedBid(auction, users[0], 2);
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertedSetCarPrice(auction, 1, manager);
                 await assertedValidateCarPrice(auction, manager, 1, CAR_IDS.length, 1, true);
                 await assertRevert(auction.setCarPrice(2, { from: manager }));
@@ -618,13 +626,13 @@ contract('CryptoCarzAuction', function (accounts) {
 
         describe('validate car price', async function () {
             it('cannot validate if car price is 0', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertRevert(auction.validateCarPrice({ from: manager }));
             });
 
             it('cannot validate twice', async function () {
                 await assertedBid(auction, users[0], 2);
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertedSetCarPrice(auction, 1, manager);
                 await assertedValidateCarPrice(auction, manager, 1, CAR_IDS.length, 1, true);
                 await assertRevert(auction.validateCarPrice({ from: manager }));
@@ -643,34 +651,23 @@ contract('CryptoCarzAuction', function (accounts) {
 
     describe('more winners than auctioned cars', async function () {
         beforeEach(async function () {
-            await buildTestAuction();
+            await buildTestAuction(BIDDING_PERIOD + CAR_IDS.length + 6);
             await buildTestBids();
-            now = web3.eth.getBlock(web3.eth.blockNumber).timestamp;
         });
 
         describe('redeem car & withdraw bid', async function () {
             it('cannot redeem car if car price has not been validated yet', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertRevert(auction.redeemCar({ from: winners[0] }));
             });
 
             it('cannot withdraw bid if car price has not been validated yet', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertRevert(auction.withdrawBid({ from: losers[0] }));
             });
 
-            // it('only winners can redeem car and losers withdraw bids', async function () {
-            //     await increaseTime(BIDDING_PERIOD + 1);
-            //     await assertedValidateCarPriceInMultipleTransactions(
-            //         auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, 2);
-            //     await assertRevert(auction.redeemCar({ from: losers[0] }));
-            //     await assertRevert(auction.withdrawBid({ from: winners[0] }));
-            //     await assertedRedeemCar(auction, token, winners[0], CAR_PRICE, bids[winners[0]]);
-            //     await assertedWithdrawBid(auction, losers[0], bids[losers[0]])
-            // });
-
             it('number of winners should be as expected', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertedSetCarPrice(auction, CAR_PRICE, manager);
                 await assertedValidateCarPriceInMultipleTransactions(
                     auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
@@ -681,7 +678,7 @@ contract('CryptoCarzAuction', function (accounts) {
                 'bidder cannot redeem or withdraw more than once AND' +
                 'remaining winners can withdraw their bid AND' +
                 'winnner cannot withdraw if already redeemed a car', async function () {
-                    await increaseTime(BIDDING_PERIOD + 1);
+                    await increaseBlocks(BIDDING_PERIOD + 1);
                     await assertedSetCarPrice(auction, CAR_PRICE, manager);
                     await assertedValidateCarPriceInMultipleTransactions(
                         auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
@@ -708,7 +705,7 @@ contract('CryptoCarzAuction', function (accounts) {
                 });
 
             it('cannot claim more cars than the number of auctioned cars', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertedSetCarPrice(auction, CAR_PRICE, manager);
                 await assertedValidateCarPriceInMultipleTransactions(
                     auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
@@ -733,7 +730,7 @@ contract('CryptoCarzAuction', function (accounts) {
             });
 
             it('cannot do it if car price has not been set', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertRevert(auction.withdraw({ from: manager }));
             });
 
@@ -743,7 +740,7 @@ contract('CryptoCarzAuction', function (accounts) {
             });
 
             it('only manager can do it', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertedSetCarPrice(auction, CAR_PRICE, manager);
                 await assertedValidateCarPriceInMultipleTransactions(
                     auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
@@ -752,7 +749,7 @@ contract('CryptoCarzAuction', function (accounts) {
             });
 
             it('cannot withdraw more than once', async function () {
-                await increaseTime(BIDDING_PERIOD + 1);
+                await increaseBlocks(BIDDING_PERIOD + 1);
                 await assertedSetCarPrice(auction, CAR_PRICE, manager);
                 await assertedValidateCarPriceInMultipleTransactions(
                     auction, manager, CAR_PRICE, CAR_IDS.length, bidders.length, NUM_VALIDATION_TRANSACTIONS);
@@ -766,7 +763,7 @@ contract('CryptoCarzAuction', function (accounts) {
         const numBidders = CAR_IDS.length - 1;
 
         before(async function () {
-            await buildTestAuction();
+            await buildTestAuction(BIDDING_PERIOD + numBidders);
             assert.isBelow(numBidders, CAR_IDS.length);
         });
 
@@ -774,7 +771,7 @@ contract('CryptoCarzAuction', function (accounts) {
             for (let i = 0; i < numBidders; i++) {
                 await assertedBid(auction, users[i], CAR_PRICE + 1);
             }
-            await increaseTime(BIDDING_PERIOD + 1);
+            await increaseBlocks(BIDDING_PERIOD + 1);
             await assertedSetCarPrice(auction, CAR_PRICE, manager);
             await assertedValidateCarPriceInMultipleTransactions(auction, manager, CAR_PRICE, CAR_IDS.length, numBidders, 2);
             for (let i = 0; i < numBidders; i++) {
@@ -789,7 +786,7 @@ contract('CryptoCarzAuction', function (accounts) {
 
     describe('destroy', async function () {
         beforeEach(async function () {
-            await buildTestAuction();
+            await buildTestAuction(BIDDING_PERIOD);
         });
 
         it('contract must not own ether nor cars before destroying it', async function () {
@@ -803,25 +800,29 @@ contract('CryptoCarzAuction', function (accounts) {
     });
 
     describe('safety timeout', async function () {
-        before(async function () {
+        it('there can be no winners AND' +
+            'bidders can withdraw their bids AND' +
+            'car price cannot be set after timeout', async function () {
             token = await assertedCreateTokenContract();
-            auction = await assertedCreateAuctionContract(token.address);
+            auction = await CryptoCarzAuctionMock.new(owner, manager, token.address, { from: someoneElse });
             await assertedCreateCars(token, CAR_IDS);
-            await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD, manager);
+            await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD + 10, manager);
             for (let i = 0; i < 10; i++) {
                 await assertedBid(auction, users[i], 10 * i + 1);
             }
-            const SAFETY_TIMEOUT_SEC = parseInt(await auction.SAFETY_TIMEOUT_SEC.call());
-            await increaseTime(BIDDING_PERIOD + SAFETY_TIMEOUT_SEC + 1);
-        });
 
-        it('bidders can withdraw their bids', async function () {
+            await increaseBlocks(BIDDING_PERIOD + 1);
+            await assertedSetCarPrice(auction, 100, manager);
+            await assertedValidateCarPrice(auction, manager, 100, CAR_IDS.length, 10, false);
+
+            const SAFETY_TIMEOUT_BLOCKS = parseInt(await auction.SAFETY_TIMEOUT_BLOCKS.call());
+            await increaseBlocks(SAFETY_TIMEOUT_BLOCKS);
+            await assertNumWinners(auction, 0, `Number of winners should be zero`);
+
             for (let i = 0; i < 10; i++) {
                 await assertedWithdrawBid(auction, users[i], 10 * i + 1);
             }
-        });
 
-        it('car price cannot be set after timeout', async function () {
             await assertRevert(auction.setCarPrice(10, { from: manager }));
         });
     });
@@ -831,7 +832,7 @@ contract('CryptoCarzAuction', function (accounts) {
             token = await assertedCreateTokenContract();
             auction = await assertedCreateAuctionContract(token.address);
             await assertedCreateCars(token, CAR_IDS);
-            await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD, manager);
+            await assertedCreateAuction(token, auction, CAR_IDS, BIDDING_PERIOD + (NUM_BID_UPGRADES * NUM_BIDDERS), manager);
         });
 
         it('full auction', async function () {
@@ -892,7 +893,7 @@ contract('CryptoCarzAuction', function (accounts) {
             });
 
             // reach auction's bidding end time
-            await increaseTime(BIDDING_PERIOD + 1);
+            await increaseBlocks(BIDDING_PERIOD + 1);
 
             // set auction's final car price
             const carPrice = new BigNumber(ETHER.times(bidTable[bidTable.length - maxNumWinners][1]));
